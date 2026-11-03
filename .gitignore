@@ -1,0 +1,21 @@
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+android/local.properties
+android/.gradle/
+android/build/
+android/app/build/
+android/captures/
+android/.idea/
+.DS_Store
+
+# Local credentials and machine-specific artifacts
+.env*
+!.env.example
+*.jks
+*.keystore
+*.pem
+*.key
+*.apk
+*.aab

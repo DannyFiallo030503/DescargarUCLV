@@ -1,0 +1,35 @@
+# Auditoría del origen y del índice
+
+Fecha: 2026-11-02 · Métodos: inspección acotada de respuestas HTTP y revisión de un snapshot histórico de directorios. No equivale a una enumeración completa ni prueba permisos de rastreo.
+
+## 1. Snapshot histórico
+
+El snapshot revisado contiene alrededor de 30 mil enlaces únicos, todos a directorios; no incluye el inventario de archivos. Sirve como referencia de jerarquía, no como índice buscable de medios. Algunos enlaces tenían HTTP y separadores no canónicos; no deben reutilizarse sin validación.
+
+## 2. Sondeo HTTP de bajo volumen
+
+| Operación | Resultado observado | Implicación |
+|---|---|---|
+| `HEAD /` | 200, Apache, HTML | El origen expone un autoindex. |
+| `GET /` con rango pequeño | 206 | El índice raíz era corto; un listado de carpeta puede ignorar `Range`. |
+| `GET` de carpetas de prueba | 200, HTML de tabla Apache | El parser debe manejar tabla y `<pre>`, entidades, rutas codificadas y tamaños. |
+| `HEAD` de un archivo de prueba | 200, MIME y tamaño | Algunas respuestas exponen ETag y Last-Modified. |
+| `GET` de un byte | 206 con `Content-Range` | El origen observado admite rangos para archivos. |
+| Rango fuera de límite | 416 | El cliente debe validar tamaño y offset antes de anexar. |
+| Origen web candidato | No se observó `Access-Control-Allow-Origin` | El acceso directo desde otro origen no está demostrado; mantener gateway/adaptador hasta verificarlo en navegador. |
+
+Son mediciones puntuales, no una prueba de estabilidad. No se probaron cambios de archivo con `If-Range`, múltiples rangos, límites de rastreo ni carga sostenida. No asumir una API, sitemap o permiso de rastreo masivo.
+
+## 3. Conclusiones para el producto
+
+1. Enumerar archivos dentro de carpetas con checkpoint; los árboles de directorios existentes no bastan para buscar medios.
+2. Contabilizar carpetas y archivos por separado. El tamaño debe ser opcional cuando el listado no lo provea.
+3. Canonicalizar URLs y rutas codificadas sin escapar del host permitido.
+4. Para reanudar, contrastar `Content-Range`, longitud y ETag/Last-Modified antes de anexar.
+5. La ausencia observada de CORS mantiene pendiente la elección de adaptador para cada plataforma.
+
+## 4. Próximos pasos seguros
+
+- Ampliar fixtures locales para tabla Apache, `<pre>`, rutas codificadas, respuesta truncada, redirección fuera del origen, cambio de ETag y disco lleno.
+- Confirmar CORS desde Chrome con el origen candidato antes de habilitar peticiones directas.
+- Mantener sincronización de baja concurrencia, pausa manual, tiempos límite y reintentos acotados.

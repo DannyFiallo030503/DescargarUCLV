@@ -1,0 +1,49 @@
+{
+  "name": "descargar-uclv",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -k \"npm:gateway\" \"npm:dev:ui\"",
+    "dev:ui": "vite --host 127.0.0.1",
+    "gateway": "node server/gateway.mjs",
+    "start": "node server/gateway.mjs",
+    "build": "tsc -b && vite build",
+    "android:add": "cap add android",
+    "android:sync": "npm run build && cap sync android",
+    "android:build:debug": "npm run android:sync && cd android && ./gradlew assembleDebug",
+    "android:open": "cap open android",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:stress": "vitest run --config vitest.stress.config.ts"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.6.0",
+    "@capacitor/core": "^8.6.0",
+    "@vitejs/plugin-react": "^6.2.1",
+    "concurrently": "^9.2.1",
+    "fuse.js": "^7.5.0",
+    "idb": "^8.0.4",
+    "lucide-react": "^1.66.0",
+    "parse5": "^8.0.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "vite": "^8.3.5"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.6.0",
+    "@types/node": "^24.10.0",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "fake-indexeddb": "^6.2.7",
+    "happy-dom": "^21.0.4",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.1"
+  },
+  "overrides": {
+    "rimraf": {
+      "glob": "14.0.3"
+    }
+  }
+}
