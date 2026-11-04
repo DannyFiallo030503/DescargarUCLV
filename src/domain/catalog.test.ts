@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { fixtureCatalog } from './fixtures'
 import {
-  childNodes, formatBytes, normalizeSearchText, selectionMark, summarizeSelection, toggleSelection,
+  childNodes, formatBytes, normalizeSearchText, resolveSelectedFiles, selectionMark, summarizeSelection, toggleSelection,
 } from './catalog'
 import { searchCatalog, suggestCorrection } from './search'
 
@@ -26,6 +26,15 @@ describe('catalog domain', () => {
     expect(summarizeSelection(fixtureCatalog, selected).fileCount).toBe(3)
     selected = toggleSelection(season, fixtureCatalog, selected)
     expect(selectionMark(season, fixtureCatalog, selected)).toBe('unchecked')
+  })
+
+  it('expands selected folders to unique file nodes for a download plan', () => {
+    const season = '/Infantiles/Animes/FairyTail/'
+    const first = `${season}Fairy001.mp4`
+    const files = resolveSelectedFiles([season, first], fixtureCatalog)
+    expect(files).toHaveLength(3)
+    expect(new Set(files.map((node) => node.id)).size).toBe(3)
+    expect(files.every((node) => node.kind === 'file')).toBe(true)
   })
 
   it('deduplicates selected IDs and separates known and unknown sizes', () => {

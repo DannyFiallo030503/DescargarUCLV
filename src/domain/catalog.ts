@@ -83,6 +83,28 @@ export function descendantFiles(nodeId: string, nodes: CatalogNode[]): CatalogNo
   return found
 }
 
+export function resolveSelectedFiles(ids: Iterable<string>, nodes: CatalogNode[]): CatalogNode[] {
+  const byId = new Map(nodes.map((node) => [node.id, node]))
+  const files = new Map<string, CatalogNode>()
+  const directories = new Set<string>()
+  for (const id of ids) {
+    const node = byId.get(id)
+    if (!node) continue
+    if (node.kind === 'file') files.set(node.id, node)
+    else directories.add(node.id)
+  }
+  for (const id of directories) {
+    let parentId = byId.get(id)?.parentId ?? null
+    let hasSelectedParent = false
+    while (parentId) {
+      if (directories.has(parentId)) { hasSelectedParent = true; break }
+      parentId = byId.get(parentId)?.parentId ?? null
+    }
+    if (!hasSelectedParent) for (const file of descendantFiles(id, nodes)) files.set(file.id, file)
+  }
+  return [...files.values()]
+}
+
 export function buildSelectionMarks(nodes: CatalogNode[], selectedIds: ReadonlySet<string>): Map<string, SelectionMark> {
   const byParent = indexedChildren(nodes)
   const statistics = new Map<string, { total: number; selected: number }>()
