@@ -25,11 +25,13 @@ La compilación debug genera `android/app/build/outputs/apk/debug/app-debug.apk`
 
 El APK incluye el adaptador Android de catálogo y el motor nativo de descargas: cola durable, parciales reanudables, destino `Descargas/Descargar UCLV`, notificaciones y trabajo en segundo plano. El destino público usa MediaStore desde API 29; API 34 o posterior programa trabajos iniciados por el usuario y API 29–33 usa el servicio foreground. En API 36 se validaron instalación, permiso de notificaciones, pausa y persistencia tras cierre forzado, programación UIDT y retirada de la cola. La petición real a `visuales.uclv.cu` expiró, así que no se obtuvo un archivo final ni se verificó publicación MediaStore/Rango contra ese servidor. Las pruebas API 29/34 y teléfono físico siguen pendientes. El APK es debug y no constituye un release firmado para distribución.
 
-## Despliegue estático de demostración en Vercel
+## Despliegue en Vercel
 
-Proyecto Vercel `uclv-media`: https://uclv-media.vercel.app/ (protegido con el SSO del equipo Vercel). El despliegue `READY` se creó subiendo el build `dist/` compilado localmente. Es una vista PWA estática: Vercel no ejecuta el gateway Node local que atiende `/api/list`, `/api/file` y `/api/downloads`. Por eso la URL permite revisar la interfaz, manifiesto e instalación/cache offline, pero no sincronizar `visuales.uclv.cu`, previsualizar archivos por el gateway ni hacer transferencias. `/api/health` responde 404 en el host remoto por diseño. Para uso completo, ejecutar la app con su gateway local o usar el APK Android. No se envían archivos personales a Vercel.
+Proyecto Vercel `uclv-media`: https://uclv-media.vercel.app/ (protegido con el SSO del equipo Vercel). El despliegue incluye `/api/health` y `/api/list`, un proxy de solo lectura al índice de `visuales.uclv.cu`. En la validación del 4 de noviembre de 2026, Vercel devolvió `fetch failed` al consultar ese host aunque el origen respondía desde el equipo de desarrollo. La función refleja el estado como desconectado; conserva el índice local y permite reintentar cuando Vercel pueda alcanzar el origen.
 
-El repositorio GitHub aún no está enlazado a Vercel: el conector no puede acceder al repo. Este despliegue es una instantánea y no se actualizará automáticamente al hacer push. Al conectar el repo, usar `npm ci`, `npm run build` y `dist/`; `/sw.js` debe servirse con revalidación para detectar actualizaciones.
+La web indica `Download` como carpeta predeterminada del navegador. El navegador decide la ruta física final y la web no puede medir su espacio libre ni administrar una cola durable. Para descargas por lotes, pausa/reanudación y selección de ruta real, usar el APK Android o el gateway local. No se envían archivos personales a Vercel.
+
+El repositorio GitHub aún no está enlazado a Vercel, así que los despliegues se publican manualmente.
 
 ## Datos incluidos en la copia JSON
 
