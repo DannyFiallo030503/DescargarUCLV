@@ -764,7 +764,7 @@ function App() {
 
   return <div className="app-shell">
     <aside className={`sidebar ${mobileNavOpen ? 'sidebar-open' : ''}`}>
-      <a className="brand" href="#inicio" onClick={(event) => { event.preventDefault(); navigate('home') }}><span className="brand-mark"><Download size={20}/></span><span><strong>Descargar UCLV</strong><small>Tu biblioteca, a tu ritmo</small></span></a>
+      <a className="brand" href="#inicio" onClick={(event) => { event.preventDefault(); navigate('home') }}><span className="brand-mark"><Download size={20}/></span><span><strong>UCLV Media</strong><small>Tu biblioteca, a tu ritmo</small></span></a>
       <div className="nav-label">Biblioteca</div>
       <nav className="primary-nav" aria-label="Navegación principal">{navigation.map(({ id, label, icon: Icon }) => <button className={`nav-item ${currentScreen === id ? 'active' : ''}`} key={id} onClick={() => navigate(id)}><Icon size={18}/><span>{label}</span>{id === 'lists' && lists.length > 0 && <span className="nav-count">{lists.length}</span>}</button>)}</nav>
       <div className="sidebar-bottom">

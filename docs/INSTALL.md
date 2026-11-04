@@ -27,9 +27,9 @@ El APK incluye el adaptador Android de catálogo y el motor nativo de descargas:
 
 ## Despliegue estático de demostración en Vercel
 
-Vercel puede publicar el build de Vite y el shell PWA con el proyecto `uclv-media`. Ese host solo entrega archivos estáticos: no ejecuta el gateway local Node que atiende `/api/list`, `/api/file` y `/api/downloads`. Por eso permite revisar la interfaz y probar la instalación/cache offline, pero no sincronizar `visuales.uclv.cu`, previsualizar archivos a través del gateway ni hacer transferencias desde la URL pública. Para uso completo, ejecutar la app con su gateway local o usar el APK Android. No se envían los archivos personales a Vercel.
+Proyecto Vercel `uclv-media`: https://uclv-media.vercel.app/ (protegido con el SSO del equipo Vercel). El despliegue `READY` se creó subiendo el build `dist/` compilado localmente. Es una vista PWA estática: Vercel no ejecuta el gateway Node local que atiende `/api/list`, `/api/file` y `/api/downloads`. Por eso la URL permite revisar la interfaz, manifiesto e instalación/cache offline, pero no sincronizar `visuales.uclv.cu`, previsualizar archivos por el gateway ni hacer transferencias. `/api/health` responde 404 en el host remoto por diseño. Para uso completo, ejecutar la app con su gateway local o usar el APK Android. No se envían archivos personales a Vercel.
 
-Vercel debe compilar con `npm run build` y publicar `dist/`; `/sw.js` se sirve sin caché para que el navegador pueda detectar actualizaciones.
+El repositorio GitHub aún no está enlazado a Vercel: el conector no puede acceder al repo. Este despliegue es una instantánea y no se actualizará automáticamente al hacer push. Al conectar el repo, usar `npm ci`, `npm run build` y `dist/`; `/sw.js` debe servirse con revalidación para detectar actualizaciones.
 
 ## Datos incluidos en la copia JSON
 

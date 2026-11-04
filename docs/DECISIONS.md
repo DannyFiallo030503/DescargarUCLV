@@ -136,6 +136,7 @@ Registro cronológico. Cambiar una decisión cuando haya nueva evidencia y dejar
 
 ## D-015 — Vercel como vista previa estática de UCLV Media
 
-- **Estado:** aceptada para preview de UI/PWA; la aplicación funcional completa sigue local/nativa.
-- **Decisión:** usar Vercel para alojar el frontend Vite compilado en `dist/` bajo el nombre de proyecto `uclv-media`. No migrar el gateway a funciones serverless ni exponer el origen: las colas y parciales necesitan almacenamiento local durable y las rutas `/api/*` no forman parte del build estático.
-- **Consecuencia:** el despliegue permite evaluar la interfaz y shell PWA/offline; las operaciones de catálogo, preview y descargas permanecen deshabilitadas sin un gateway local. El backend no se convierte en servicio público.
+- **Estado:** producción `READY` como instantánea estática; SSO del equipo habilitado; conexión automática de GitHub pendiente.
+- **Decisión:** alojar el frontend Vite compilado en `dist/` bajo el proyecto `uclv-media` y alias `https://uclv-media.vercel.app/`. No migrar el gateway a funciones serverless ni exponer el origen: las colas/parciales necesitan almacenamiento local durable y las rutas `/api/*` no forman parte del build estático.
+- **Verificación:** raíz, manifiesto, service worker, JavaScript, CSS y ambos iconos respondieron 200; `manifest.webmanifest` declara `UCLV Media`, `standalone` y `/`. `/api/health` responde 404, como se espera en un host solo estático.
+- **Consecuencia:** el despliegue permite evaluar interfaz y shell PWA/offline; catálogo, previews a través del gateway y transferencias requieren el gateway local o APK. Vercel no recibe archivos personales. El repo GitHub no está enlazado al proveedor Git, por lo que el deploy actual es manual y los pushes no lo actualizan.
