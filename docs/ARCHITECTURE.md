@@ -19,7 +19,8 @@ React + TypeScript (PWA)
        ├─ Gateway Node: allowlist HTTPS visuales.uclv.cu
        ├─ DownloadManager: un archivo a la vez, Range/If-Range, checkpoints `.part`
        ├─ Estado JSON atómico en el perfil del usuario; contenido en Downloads del SO
-       └─ Plataformas futuras: adaptador nativo Capacitor Android / Tauri Desktop
+       ├─ Capacitor Android: transporte HTTPS/parseo nativo del catálogo, consulta MediaStore/espacio
+       └─ Desktop instalable como PWA; Tauri se mantiene como opción posterior
 
 Origen UCLV (índice Apache/HTTP; formato y CORS por confirmar)
 ```
@@ -96,7 +97,7 @@ Todos los IDs deben ser estables ante cambio de nombre si la URL/identidad remot
 
 ### Plataformas nativas
 
-El proyecto generado por Capacitor 8.6 contiene el frontend de `dist` en el APK. En Android se desactiva el service worker web; el APK debe usar una API nativa para red/destino. El gateway actual es un proceso Node de escritorio y no está empaquetado dentro del Android WebView. Por eso las llamadas `/api/*` todavía no están adaptadas a Capacitor: el shell Android no puede sincronizar catálogo ni transferir archivos hasta implementar el plugin/servicio Android y reemplazar esos endpoints con el port nativo. El proyecto solo declara `INTERNET`, bloquea cleartext y el backup automático Android. El APK no se declara utilizable hasta el E2E con SDK/dispositivo.
+El proyecto generado por Capacitor 8.6 contiene el frontend de `dist` en el APK; el service worker PWA no se ejecuta dentro de Android. El gateway Node sigue siendo exclusivo de web/escritorio. Android implementa `NativeCatalogAdapter` con `CapacitorHttp` y parser compartido para listar y sincronizar sin gateway. `AndroidDownloadsPlugin` consulta `Download/Descargar UCLV` y el espacio del volumen en Android 10+ sin permiso amplio; no tiene todavía una escritura de archivos, MediaStore publish, cola o transferencias. La descarga nativa debe seguir D-013: persistencia de cola/validadores, parcial app-private, servicio/job por versión Android, progreso notificado, pausa/resume/recovery y publicación segura en `MediaStore.Downloads`. La UI no permite encolar Android hasta cerrar ese flujo. Android 7–9 aún requiere definir SAF/permisos.
 
 ## 6. Máquina de estados de descarga
 

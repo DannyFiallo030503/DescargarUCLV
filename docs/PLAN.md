@@ -182,7 +182,7 @@ Auditoría local y sondeo HTTP mínimo completados: ver `SOURCE_AUDIT.md`. Parse
 
 **Gate G7:** nunca se presenta espacio simulado como real; suficiente, insuficiente y desconocido tienen comportamientos revisados.
 
-**Ejecución actual:** gateway expone destino local editable y espacio libre de filesystem; destino por defecto `Downloads/Descargar UCLV`. UI y API revisadas en Chrome. El APK todavía no tiene adaptador de destino ni consulta fiable de espacio; destino Android y pruebas reales de falta de espacio/permisos están pendientes; G7 abierto.
+**Ejecución actual:** gateway expone destino local editable y espacio libre de filesystem; destino por defecto `Downloads/Descargar UCLV`. Android ahora informa `Download/Descargar UCLV` y espacio de volumen mediante plugin Capacitor en API 29+ sin permiso amplio; se actualiza el preview para mostrar esa información. No existe aún escritura/publicación MediaStore ni selector alternativo; Android 7–9 devuelve destino no soportado. Verificación en dispositivo, volumen extraíble, poco espacio y permisos siguen pendientes; G7 abierto.
 
 ## Fase 8 — motor de descargas resiliente
 
@@ -201,7 +201,7 @@ Auditoría local y sondeo HTTP mínimo completados: ver `SOURCE_AUDIT.md`. Parse
 
 **Gate G8:** checksum final igual al fixture tras corte a varios offsets y reinicios; no hay concatenación incorrecta ni retry infinito.
 
-**Ejecución actual:** cola secuencial persistente, `.part`, Range/If-Range, validación de rango/tamaño, promoción sin sobrescritura, timeout de inactividad, pausado/reanudación y retry corto/acotado implementados. 16 pruebas del gestor de descargas verifican fallos, reinicio y checksum con servidor fixture. Aún falta ejercicio prolongado con perfiles de red y revisión de seguridad antes de cerrar G8.
+**Ejecución actual:** cola secuencial persistente del gateway, `.part`, Range/If-Range, validación de rango/tamaño, promoción sin sobrescritura, timeout de inactividad, pausado/reanudación y retry corto/acotado implementados. 16 pruebas del gestor verifican fallos, reinicio y checksum con fixture. Para Android se acordó persistencia/MediaStore y JobScheduler UIDT en API 34+ con fallback foreground y checkpoint; el motor no está implementado ni habilitado. Falta ejercicio prolongado con perfiles de red y revisión de seguridad antes de cerrar G8.
 
 ## Fase 9 — multimedia e imágenes
 
