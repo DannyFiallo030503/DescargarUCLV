@@ -6,6 +6,7 @@ import {
   Settings, Sparkles, Wifi, WifiOff, X,
 } from 'lucide-react'
 import type { CatalogNode } from '@/domain/catalog'
+import { Capacitor } from '@capacitor/core'
 import { buildSelectionMarks, childNodes, descendantFiles, formatBytes, summarizeSelection, toggleSelection } from '@/domain/catalog'
 import { CatalogSearchClient, type CatalogSearchView } from '@/application/catalog-search-client'
 import { groupRelatedSeries } from '@/domain/grouping'
@@ -13,6 +14,8 @@ import { makeBackupDocument, parseBackup, type BackupPreview } from '@/data/back
 import { inspectBrowserStorage, requestPersistentStorage, type BrowserStorageInfo } from '@/data/browser-storage'
 import { CatalogSyncService } from '@/application/catalog-sync'
 import { LocalGatewayCatalogAdapter } from '@/application/catalog-adapter'
+import { NativeCatalogAdapter } from '@/application/native-catalog-adapter'
+import { sourceUrlForPath } from '@/application/source-url'
 import {
   backupRepository, catalogRepository, favoritesRepository, listsRepository,
   type SavedList, type SyncState,
@@ -55,6 +58,8 @@ function App() {
   const [syncState, setSyncState] = useState<SyncState>({ phase: 'idle', directoriesDone: 0, filesFound: 0 })
   const [exampleMode, setExampleMode] = useState(true)
   const [gatewayOnline, setGatewayOnline] = useState(false)
+  const [catalogOnline, setCatalogOnline] = useState(false)
+  const nativePlatform = Capacitor.isNativePlatform()
   const [browserStorage, setBrowserStorage] = useState<BrowserStorageInfo | null>(null)
   const [currentScreen, setCurrentScreen] = useState<Screen>('home')
   const [currentPath, setCurrentPath] = useState('/')
@@ -79,6 +84,8 @@ function App() {
   const [busy, setBusy] = useState(true)
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
   const syncService = useRef<CatalogSyncService | undefined>(undefined)
+  const nativeCatalog = useRef<NativeCatalogAdapter | undefined>(undefined)
+  nativeCatalog.current ??= new NativeCatalogAdapter()
   const searchWorker = useRef<CatalogSearchClient | undefined>(undefined)
   searchWorker.current ??= new CatalogSearchClient()
   const searchInputRef = useRef<HTMLInputElement>(null)
@@ -158,14 +165,19 @@ function App() {
         await catalogRepository.ensureFixture()
         await refreshLocalData(true)
         setBrowserStorage(await inspectBrowserStorage())
-        const health = await fetch('/api/health', { cache: 'no-store' })
-        if (active) setGatewayOnline(health.ok)
-        if (health.ok && active) {
-          const downloads = await fetch('/api/downloads', { cache: 'no-store' })
-          if (downloads.ok) setDownloadSnapshot(await downloads.json() as DownloadSnapshot)
+        if (nativePlatform) {
+          const online = await nativeCatalog.current!.checkConnection()
+          if (active) setCatalogOnline(online)
+        } else {
+          const health = await fetch('/api/health', { cache: 'no-store' })
+          if (active) { setGatewayOnline(health.ok); setCatalogOnline(health.ok) }
+          if (health.ok && active) {
+            const downloads = await fetch('/api/downloads', { cache: 'no-store' })
+            if (downloads.ok) setDownloadSnapshot(await downloads.json() as DownloadSnapshot)
+          }
         }
       } catch {
-        if (active) setGatewayOnline(false)
+        if (active) { setGatewayOnline(false); setCatalogOnline(false) }
       } finally {
         if (active) setBusy(false)
       }
@@ -239,12 +251,12 @@ function App() {
   }
 
   async function startSync() {
-    if (!gatewayOnline || syncState.phase === 'running') return
+    if (!catalogOnline || syncState.phase === 'running') return
     // Request storage protection directly from the user's Sync click before awaiting network work.
     const storageRequest = requestPersistentStorage()
     setBrowserStorage(await storageRequest)
     syncService.current ??= new CatalogSyncService(
-      new LocalGatewayCatalogAdapter(),
+      nativePlatform ? nativeCatalog.current! : new LocalGatewayCatalogAdapter(),
       (entries) => searchWorker.current?.update(entries),
     )
     const result = await syncService.current.run((state) => {
@@ -366,6 +378,10 @@ function App() {
   }
 
   async function enqueueIds(ids: string[], clearSelection = false) {
+    if (!gatewayOnline) {
+      setDownloadMessage('Las descargas nativas de Android todavía no están disponibles. Tu selección y tus listas siguen guardadas.')
+      return
+    }
     const selected = new Set(ids)
     const items = [...selected].map((id) => nodeById.get(id)).filter((node): node is CatalogNode => node?.kind === 'file').map((node) => ({
       id: node.id, name: node.name, path: node.relativePath, sizeBytes: node.sizeBytes,
@@ -562,9 +578,9 @@ function App() {
       </div>
       {running
         ? <button className="button button-secondary" onClick={pauseSync}><Pause size={16} />Pausar</button>
-        : gatewayOnline
+        : catalogOnline
           ? <button className="button button-primary" onClick={() => void startSync()}><Download size={16} />{paused ? 'Continuar' : partial ? `Reintentar ${syncState.deferredDirectories ?? ''} carpetas` : completed ? 'Actualizar índice' : 'Sincronizar índice'}</button>
-          : <span className="sync-offline"><WifiOff size={15} />Servicio local sin conexión</span>}
+          : <span className="sync-offline"><WifiOff size={15} />Catálogo sin conexión</span>}
     </section>
   }
 
@@ -599,7 +615,7 @@ function App() {
         {crumbs.map((crumb) => <span key={crumb.id} className="breadcrumb-part"><ChevronRight size={14}/><button onClick={() => setCurrentPath(crumb.id)}>{crumb.name}</button></span>)}
       </div>
       <div className="page-title-row"><div><p className="eyebrow">{searching ? 'Búsqueda en el dispositivo' : 'Explorar carpetas'}</p><h1>{searching ? 'Resultados' : currentNode?.name ?? 'Biblioteca'}</h1><p className="page-subtitle">{searching ? `Coincidencias para “${query}” en el índice guardado.` : 'Navega por el contenido y selecciona solo lo que quieres guardar.'}</p></div>
-        {!searching && <button className="button button-secondary" onClick={() => void startSync()} disabled={!gatewayOnline || syncState.phase === 'running'}><Download size={16}/>Actualizar índice</button>}
+        {!searching && <button className="button button-secondary" onClick={() => void startSync()} disabled={!catalogOnline || syncState.phase === 'running'}><Download size={16}/>Actualizar índice</button>}
       </div>
       {searching ? <>
         {currentSearchView?.pending ? <div className="result-count" role="status">Buscando en tu biblioteca…</div> : <>
@@ -646,6 +662,7 @@ function App() {
 
   function renderDownloads() {
     const labels: Record<string, string> = { queued: 'En cola', downloading: 'Descargando', paused: 'Pausada', completed: 'Completada', error: 'Requiere atención' }
+    if (!gatewayOnline) return <><div className="page-title-row"><div><p className="eyebrow">Transferencias guardadas</p><h1>Descargas</h1><p className="page-subtitle">En Android se habilitarán cuando esté listo el motor nativo reanudable.</p></div></div><div className="empty-card"><HardDriveDownload size={24}/><strong>{nativePlatform ? 'Descargas nativas en preparación' : 'Inicia el servicio local'}</strong><span>{nativePlatform ? 'Puedes explorar y guardar favoritos y listas. La descarga se activará cuando pueda conservar y reanudar archivos parciales de forma segura.' : 'Abre la aplicación con el servicio local para consultar tus transferencias guardadas.'}</span></div></>
     return <><div className="page-title-row"><div><p className="eyebrow">Transferencias guardadas</p><h1>Descargas</h1><p className="page-subtitle">La cola y los archivos parciales se guardan en este dispositivo.</p></div><button className="button button-secondary" onClick={() => void refreshDownloads()}><Clock3 size={16}/>Actualizar</button></div>
       <section className="download-info"><span className="download-info-icon"><HardDriveDownload size={23}/></span><div><strong>Destino predeterminado para nuevas descargas: {downloadSnapshot.destination || 'Cargando carpeta…'}</strong><p>{formatBytes(downloadSnapshot.freeBytes)} disponibles · Cada trabajo conserva su propio destino.</p></div><CircleHelp size={19}/></section>
       {downloadMessage && <div className="download-message" role="status"><span>{downloadMessage}</span><button className="icon-button" aria-label="Cerrar aviso" onClick={() => setDownloadMessage('')}><X size={16}/></button></div>}
@@ -669,8 +686,8 @@ function App() {
     return <><div className="page-title-row"><div><p className="eyebrow">Ajustar a tu dispositivo</p><h1>Ajustes</h1><p className="page-subtitle">Preferencias claras. Las cambiamos cuando tú quieras.</p></div></div>
       {downloadMessage && <div className="download-message" role="status"><span>{downloadMessage}</span><button className="icon-button" aria-label="Cerrar aviso" onClick={() => setDownloadMessage('')}><X size={16}/></button></div>}
       <div className="settings-list">
-        <section className="setting-row"><span className="setting-icon"><HardDriveDownload size={19}/></span><div><strong>Carpeta de descarga</strong><small id="destination-help">Escribe la ruta completa de una carpeta. Las colas ya creadas conservan su destino y sus archivos parciales.</small></div><form className="setting-destination-control" onSubmit={(event) => void saveDestination(event)}><label className="visually-hidden" htmlFor="destination-path">Ruta de descarga predeterminada</label><input id="destination-path" aria-describedby="destination-help" value={destinationDraft} onChange={(event) => setDestinationDraft(event.target.value)} placeholder="Ruta completa de Descargas"/><button type="submit" className="button button-secondary" disabled={!destinationDraft.trim()}>Guardar</button></form></section>
-        <section className="setting-row"><span className="setting-icon"><Wifi size={19}/></span><div><strong>Conexión al catálogo</strong><small>{gatewayOnline ? 'Servicio local disponible. Las consultas al origen se hacen desde este dispositivo.' : 'Inicia el gateway local para consultar el catálogo.'}</small></div><span className={`service-status ${gatewayOnline ? 'online' : ''}`}>{gatewayOnline ? 'Conectado' : 'Desconectado'}</span></section>
+        <section className="setting-row"><span className="setting-icon"><HardDriveDownload size={19}/></span><div><strong>Carpeta de descarga</strong><small id="destination-help">{nativePlatform ? 'La selección de carpeta y la medición de espacio para Android se habilitarán junto con el motor nativo de descargas.' : 'Escribe la ruta completa de una carpeta. Las colas ya creadas conservan su destino y sus archivos parciales.'}</small></div><form className="setting-destination-control" onSubmit={(event) => void saveDestination(event)}><label className="visually-hidden" htmlFor="destination-path">Ruta de descarga predeterminada</label><input id="destination-path" aria-describedby="destination-help" value={destinationDraft} onChange={(event) => setDestinationDraft(event.target.value)} placeholder="Ruta completa de Descargas" disabled={nativePlatform || !gatewayOnline}/><button type="submit" className="button button-secondary" disabled={nativePlatform || !gatewayOnline || !destinationDraft.trim()}>Guardar</button></form></section>
+        <section className="setting-row"><span className="setting-icon"><Wifi size={19}/></span><div><strong>Conexión al catálogo</strong><small>{nativePlatform ? catalogOnline ? 'Conexión HTTPS directa desde Android. Descargas nativas aún pendientes.' : 'No se pudo conectar al catálogo; el índice guardado sigue disponible.' : gatewayOnline ? 'Servicio local disponible. Las consultas al origen se hacen desde este dispositivo.' : 'Inicia el gateway local para consultar el catálogo.'}</small></div><span className={`service-status ${catalogOnline ? 'online' : ''}`}>{catalogOnline ? 'Conectado' : 'Desconectado'}</span></section>
         <section className="setting-row"><span className="setting-icon"><Clock3 size={19}/></span><div><strong>Reintentos</strong><small>Máximo 2 intentos automáticos por carpeta. Si falla, conserva el punto de continuación.</small></div><span className="setting-value">Rápido y limitado</span></section>
         <section className="setting-row"><span className="setting-icon"><Bookmark size={19}/></span><div><strong>Datos guardados</strong><small>{nodes.length.toLocaleString('es')} elementos · {favorites.size} favoritos · {lists.length} listas</small></div><span className="service-status online">En este dispositivo</span></section>
         <section className="setting-row"><span className="setting-icon"><HardDriveDownload size={19}/></span><div><strong>Protección del índice</strong><small>{browserStorage?.persistent === true
@@ -703,7 +720,7 @@ function App() {
       <div className="nav-label">Biblioteca</div>
       <nav className="primary-nav" aria-label="Navegación principal">{navigation.map(({ id, label, icon: Icon }) => <button className={`nav-item ${currentScreen === id ? 'active' : ''}`} key={id} onClick={() => navigate(id)}><Icon size={18}/><span>{label}</span>{id === 'lists' && lists.length > 0 && <span className="nav-count">{lists.length}</span>}</button>)}</nav>
       <div className="sidebar-bottom">
-        <button className={`gateway-pill ${gatewayOnline ? 'gateway-online' : ''}`} onClick={() => navigate('settings')}><span className="gateway-dot"/><span>{gatewayOnline ? 'Servicio local listo' : 'Servicio local requerido'}</span><ChevronRight size={14}/></button>
+        <button className={`gateway-pill ${catalogOnline ? 'gateway-online' : ''}`} onClick={() => navigate('settings')}><span className="gateway-dot"/><span>{nativePlatform ? catalogOnline ? 'Catálogo conectado' : 'Catálogo sin conexión' : gatewayOnline ? 'Servicio local listo' : 'Servicio local requerido'}</span><ChevronRight size={14}/></button>
         <div className="sidebar-tip"><Sparkles size={16}/><span>Guarda tus listas. Las encuentras aquí cuando regreses.</span></div>
       </div>
     </aside>
@@ -712,7 +729,7 @@ function App() {
       <header className="topbar">
         <button className="mobile-menu icon-button" aria-label="Abrir menú" onClick={() => setMobileNavOpen(true)}><Menu size={21}/></button>
         <label className="search-box"><Search size={18}/><input ref={searchInputRef} aria-label="Buscar carpetas y archivos" placeholder="Busca una serie, película o carpeta…" value={query} onChange={(event) => startSearch(event.target.value)} /><kbd>⌘ K</kbd>{query && <button type="button" className="clear-search" aria-label="Limpiar búsqueda" onClick={() => setQuery('')}><X size={16}/></button>}</label>
-        <div className={`connection-chip ${gatewayOnline ? 'connection-online' : ''}`}><span/>{gatewayOnline ? 'Conectado' : 'Sin conexión'}</div>
+        <div className={`connection-chip ${catalogOnline ? 'connection-online' : ''}`}><span/>{catalogOnline ? 'Conectado' : 'Sin conexión'}</div>
         <button className="top-settings icon-button" aria-label="Abrir ajustes" onClick={() => navigate('settings')}><Settings size={19}/></button>
       </header>
       <div className="content-area">
@@ -737,9 +754,9 @@ function App() {
         <button className="preview-close icon-button" data-initial-focus aria-label="Cerrar vista previa" onClick={() => setPreviewNode(null)}><X size={20}/></button>
         <div className="media-title"><span><Eye size={17}/></span><div><h2 id="preview-title">{previewNode.name}</h2><small>{previewNode.relativePath}</small></div></div>
         {/\.(jpe?g|png|gif|webp|avif|bmp|svg)$/i.test(previewNode.name)
-          ? <img className="media-image" src={`/api/file?path=${encodeURIComponent(previewNode.relativePath)}`} alt={previewNode.name} />
-          : <video className="media-video" controls preload="metadata" src={`/api/file?path=${encodeURIComponent(previewNode.relativePath)}`} aria-label={`Reproductor de ${previewNode.name}`} />}
-        <a className="text-button media-original" href={`/api/file?path=${encodeURIComponent(previewNode.relativePath)}`} target="_blank" rel="noreferrer">Abrir el archivo original</a>
+          ? <img className="media-image" src={nativePlatform ? sourceUrlForPath(previewNode.relativePath) : `/api/file?path=${encodeURIComponent(previewNode.relativePath)}`} alt={previewNode.name} />
+          : <video className="media-video" controls preload="metadata" src={nativePlatform ? sourceUrlForPath(previewNode.relativePath) : `/api/file?path=${encodeURIComponent(previewNode.relativePath)}`} aria-label={`Reproductor de ${previewNode.name}`} />}
+        <a className="text-button media-original" href={nativePlatform ? sourceUrlForPath(previewNode.relativePath) : `/api/file?path=${encodeURIComponent(previewNode.relativePath)}`} target="_blank" rel="noreferrer">Abrir el archivo original</a>
       </section>
     </div>}
     {pendingDownloadPlan && <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setPendingDownloadPlan(null) }}>
@@ -747,13 +764,13 @@ function App() {
         <button className="dialog-close icon-button" data-initial-focus aria-label="Cerrar revisión" onClick={() => setPendingDownloadPlan(null)}><X size={19}/></button>
         <span className="dialog-icon"><HardDriveDownload size={22}/></span><p className="eyebrow">Antes de empezar</p><h2 id="download-plan-title">Revisa la descarga</h2>
         <p>Se preparan {pendingSummary.fileCount} {pendingSummary.fileCount === 1 ? 'archivo' : 'archivos'} para esta cola. Puedes pausarla y volver más tarde.</p>
-        <div className="plan-summary-grid"><div><small>Tamaño conocido</small><strong>{formatBytes(pendingSummary.knownBytes)}</strong></div><div><small>Espacio disponible</small><strong>{formatBytes(downloadSnapshot.freeBytes)}</strong></div></div>
-        <div className="plan-destination"><HardDriveDownload size={16}/><span><strong>Se guardarán en</strong><small>{downloadSnapshot.destination || 'Destino no disponible'}</small></span></div>
+        <div className="plan-summary-grid"><div><small>Tamaño conocido</small><strong>{formatBytes(pendingSummary.knownBytes)}</strong></div><div><small>Espacio disponible</small><strong>{gatewayOnline ? formatBytes(downloadSnapshot.freeBytes) : 'Aún no disponible'}</strong></div></div>
+        <div className="plan-destination"><HardDriveDownload size={16}/><span><strong>Se guardarán en</strong><small>{gatewayOnline ? downloadSnapshot.destination || 'Destino no disponible' : 'Destino aún no disponible'}</small></span></div>
         {pendingSummary.unknownSizeCount > 0 && <p className="plan-warning" role="status">{pendingSummary.unknownSizeCount} archivos no tienen tamaño conocido. El gateway comprobará el espacio mientras descarga.</p>}
         {pendingDuplicates > 0 && <p className="plan-note">Se omitirán {pendingDuplicates} elementos que ya están en esta cola/destino.</p>}
         {missingPendingCount > 0 && <p className="plan-warning">{missingPendingCount} elementos ya no aparecen en el índice guardado y no se añadirán.</p>}
-        {!pendingFits && <p className="plan-error" role="alert">El tamaño conocido supera el espacio libre. Elige otra carpeta o selecciona menos archivos.</p>}
-        {pendingNodes.length > 0 && <p className="gateway-requirement">El gateway local debe permanecer abierto para que las transferencias continúen. El avance se guarda si lo cierras.</p>}
+        {gatewayOnline && !pendingFits && <p className="plan-error" role="alert">El tamaño conocido supera el espacio libre. Elige otra carpeta o selecciona menos archivos.</p>}
+        {pendingNodes.length > 0 && <p className="gateway-requirement">{gatewayOnline ? 'El gateway local debe permanecer abierto para que las transferencias continúen. El avance se guarda si lo cierras.' : nativePlatform ? 'Android aún no tiene motor de descarga, destino ni medición de espacio disponibles. La selección se conserva en tus listas.' : 'Conecta el servicio local para consultar el destino y añadir elementos a la cola.'}</p>}
         <div className="dialog-actions"><button type="button" className="button button-secondary" onClick={() => setPendingDownloadPlan(null)}>Volver</button><button type="button" className="button button-primary" disabled={!newPendingNodes.length || !pendingFits || !gatewayOnline} onClick={() => void confirmDownloadPlan()}><Download size={16}/>Añadir a la cola</button></div>
       </section>
     </div>}
