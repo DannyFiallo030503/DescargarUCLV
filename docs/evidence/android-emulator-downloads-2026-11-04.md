@@ -36,3 +36,10 @@ La primera reanudación falló porque JobScheduler exige `android.permission.ACC
 ## Estado final del AVD
 
 La cola de prueba quedó vacía, el permiso de notificaciones volvió a concedido y el APK permanece instalado. Maze Odyssey no se desinstaló ni se borraron sus datos.
+
+## Revisión adicional de continuidad
+
+- Se repitieron `npm test` (72/72) y `npm run build` (correctos; Vite advierte que el bundle principal minificado supera 500 kB).
+- Se intentó repetir `testDebugUnitTest assembleDebug`. La primera ejecución descargó Gradle 8.14.3; las tareas `testDebugUnitTest` y `assembleDebug` llegaron a figurar `UP-TO-DATE`, pero Gradle continuó más de diez minutos en `:capacitor-android:extractDebugAnnotations`, consumiendo CPU. Se interrumpió esa tarea de metadatos. El APK existente sigue verificable y su SHA-256 es `dd6564a39974dce72a1536aee0459b7376777b154efaa4637057a9d8473506de`; esta repetición no se considera una ejecución Gradle completa.
+- Se probó de nuevo la ruta al origen: un HEAD desde el host a `181.225.239.26:443` expiró tras 7 s sin cabeceras. El túnel loopback con `adb reverse` sí conectó el tráfico del AVD al host, pero el origen no respondió en el intento anterior. No se insiste para evitar sumar solicitudes mientras la conexión está degradada.
+- Se retiraron los ajustes temporales: proxy global del AVD en `:0`, reverse de `18888` eliminado y proceso del proxy detenido. La app se dejó abierta en `MainActivity`; cola de QA vacía, permiso de notificaciones concedido y sin notificación de descarga activa.
