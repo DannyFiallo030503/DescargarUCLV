@@ -298,8 +298,8 @@ h1 { margin-bottom: 12px; font: 800 clamp(28px, 3.3vw, 42px)/1.16 Manrope, sans-
   .content-area { padding: 24px 16px 35px; }
   .welcome-row { min-height: auto; align-items: center; padding: 9px 0 12px; }
   h1 { font-size: clamp(27px, 7.2vw, 36px); letter-spacing: -1.15px; }
-  .welcome-art { width: 91px; height: 107px; margin: 0 -3px 0 0; transform: scale(.77); transform-origin: right center; }
-  .welcome-art .art-orbit { opacity: .7; }
+  .welcome-art { width: 91px; height: 107px; margin: 0 5px 0 0; transform: translateX(-10px) scale(.77); transform-origin: right center; }
+  .welcome-art .art-orbit { display: none; }
   .desktop-break { display: none; }
   .page-subtitle { font-size: 12px; }
   .sync-card { display: grid; grid-template-columns: 35px minmax(0, 1fr); gap: 10px; margin: 13px 0 29px; padding: 12px; }
@@ -365,7 +365,7 @@ h1 { margin-bottom: 12px; font: 800 clamp(28px, 3.3vw, 42px)/1.16 Manrope, sans-
 
 @media (max-width: 390px) {
   .content-area { padding-inline: 12px; }
-  .welcome-art { width: 64px; margin-right: 0; transform: scale(.58); }
+  .welcome-art { width: 64px; margin-right: 0; transform: translateX(-18px) scale(.58); }
   .welcome-row h1 { font-size: 26px; }
   .sync-card > .button { min-height: 44px; font-size: 14px; }
   .category-card { min-height: 135px; }

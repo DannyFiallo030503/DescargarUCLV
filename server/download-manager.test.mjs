@@ -1,9 +1,11 @@
 // @vitest-environment node
 import { createHash } from 'node:crypto'
+import { createWriteStream } from 'node:fs'
 import { createServer } from 'node:http'
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, open, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { Writable } from 'node:stream'
 import { afterEach, describe, expect, it } from 'vitest'
 import { DownloadManager } from './download-manager.mjs'
 
@@ -327,5 +329,102 @@ describe('durable download manager', () => {
     expect(seen[1]).toEqual({ range: `bytes=${partialBytes}-`, ifRange: '"slow-v1"' })
     expect(createHash('sha256').update(await readFile(join(destination, 'slow.mp4'))).digest('hex'))
       .toBe(createHash('sha256').update(payload).digest('hex'))
+  })
+
+  it('recupera un corte de conexión y continúa desde los bytes parciales', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'descargar-uclv-cut-'))
+    const destination = join(directory, 'Downloads')
+    const payload = Buffer.alloc(256 * 1024, 65)
+    const seen = []
+    let interrupted = false
+    const server = createServer((request, response) => {
+      const range = request.headers.range
+      const offset = range ? Number(/^bytes=(\d+)-/.exec(range)?.[1]) : 0
+      seen.push({ range, ifRange: request.headers['if-range'] })
+      response.setHeader('etag', '"cut-v1"')
+      response.setHeader('accept-ranges', 'bytes')
+      if (offset) {
+        response.writeHead(206, { 'content-range': `bytes ${offset}-${payload.length - 1}/${payload.length}`, 'content-length': payload.length - offset })
+        response.end(payload.subarray(offset))
+        return
+      }
+      response.writeHead(200, { 'content-length': payload.length })
+      let cursor = 0
+      const timer = setInterval(() => {
+        const end = Math.min(cursor + 8192, payload.length)
+        response.write(payload.subarray(cursor, end))
+        cursor = end
+        if (!interrupted && cursor >= 32 * 1024) {
+          interrupted = true
+          clearInterval(timer)
+          response.destroy()
+        } else if (cursor >= payload.length) {
+          clearInterval(timer)
+          response.end()
+        }
+      }, 5)
+      response.on('close', () => clearInterval(timer))
+    })
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const origin = `http://127.0.0.1:${server.address().port}`
+    resources.push({ directory, server })
+    const manager = new DownloadManager({ stateFile: join(directory, 'state', 'downloads.json'), destination, sourceOrigin: origin })
+    await manager.init()
+    const job = await manager.enqueue([{ id: '/cut.mp4', name: 'cut.mp4', path: '/cut.mp4', sizeBytes: payload.length }])
+    await waitFor(() => manager.snapshot()[0]?.status === 'completed')
+    expect(seen).toHaveLength(2)
+    expect(seen[0].range).toBeUndefined()
+    expect(seen[1].range).toMatch(/^bytes=\d+-$/)
+    expect(Number(/^bytes=(\d+)-$/.exec(seen[1].range)?.[1])).toBeGreaterThan(0)
+    expect(seen[1].ifRange).toBe('"cut-v1"')
+    expect(manager.snapshot().find((candidate) => candidate.id === job.id)?.items[0].attempts).toBe(2)
+    expect(createHash('sha256').update(await readFile(join(destination, 'cut.mp4'))).digest('hex'))
+      .toBe(createHash('sha256').update(payload).digest('hex'))
+  })
+
+  it('conserva el parcial al fallar con ENOSPC y permite reanudar después de liberar espacio', async () => {
+    const fixture = await setup('disk-full')
+    let failOnce = true
+    const manager = new DownloadManager({
+      ...fixture,
+      sourceOrigin: fixture.origin,
+      createWriteStreamImpl: (path, options) => {
+        if (!failOnce) return createWriteStream(path, options)
+        failOnce = false
+        const filePromise = open(path, options.flags)
+        let wrotePrefix = false
+        return new Writable({
+          write(chunk, _encoding, callback) {
+            if (wrotePrefix) {
+              callback(Object.assign(new Error('No space left on device'), { code: 'ENOSPC' }))
+              return
+            }
+            wrotePrefix = true
+            filePromise
+              .then((file) => file.write(chunk.subarray(0, Math.min(5, chunk.length))))
+              .then(() => callback(Object.assign(new Error('No space left on device'), { code: 'ENOSPC' })), callback)
+          },
+          destroy(error, callback) {
+            filePromise.then((file) => file.close()).then(() => callback(error), () => callback(error))
+          },
+        })
+      },
+    })
+    await manager.init()
+    const job = await manager.enqueue([{ id: '/full.mp4', name: 'full.mp4', path: '/full.mp4', sizeBytes: fixture.payload.length }])
+    await waitFor(() => manager.snapshot()[0]?.status === 'error')
+    const target = join(fixture.destination, 'full.mp4')
+    const partial = await readFile(`${target}.part`)
+    expect(partial.length).toBeGreaterThan(0)
+    expect(partial.length).toBeLessThan(fixture.payload.length)
+    expect(manager.snapshot()[0].items[0].bytesDone).toBe(partial.length)
+    expect(manager.snapshot()[0].items[0].error).toMatch(/No space left on device/)
+    expect(fixture.seen).toHaveLength(1)
+
+    await manager.resume(job.id)
+    await waitFor(() => manager.snapshot()[0]?.status === 'completed')
+    expect(fixture.seen[1]).toEqual({ range: `bytes=${partial.length}-`, ifRange: '"fixture-v1"' })
+    expect(createHash('sha256').update(await readFile(target)).digest('hex'))
+      .toBe(createHash('sha256').update(fixture.payload).digest('hex'))
   })
 })

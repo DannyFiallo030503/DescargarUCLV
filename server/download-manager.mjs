@@ -58,13 +58,14 @@ function parseContentRange(value) {
 }
 
 export class DownloadManager {
-  constructor({ stateFile, destination, fetchImpl = fetch, linkImpl = link, renameImpl = rename, onChange = () => {}, sourceOrigin = 'https://visuales.uclv.cu' }) {
+  constructor({ stateFile, destination, fetchImpl = fetch, linkImpl = link, renameImpl = rename, createWriteStreamImpl = createWriteStream, onChange = () => {}, sourceOrigin = 'https://visuales.uclv.cu' }) {
     if (!isAbsolute(destination) || !isAbsolute(stateFile)) throw new Error('La carpeta de descargas y el estado deben usar rutas absolutas.')
     this.stateFile = stateFile
     this.destination = resolve(destination)
     this.fetchImpl = fetchImpl
     this.linkImpl = linkImpl
     this.renameImpl = renameImpl
+    this.createWriteStreamImpl = createWriteStreamImpl
     this.sourceOrigin = sourceOrigin
     this.onChange = onChange
     this.jobs = []
@@ -374,7 +375,7 @@ export class DownloadManager {
             }
             callback(null, chunk)
           } }),
-          createWriteStream(partial, { flags: append ? 'a' : 'w' }),
+          this.createWriteStreamImpl(partial, { flags: append ? 'a' : 'w' }),
           { signal: combinedSignal },
         )
         await progressCommit
