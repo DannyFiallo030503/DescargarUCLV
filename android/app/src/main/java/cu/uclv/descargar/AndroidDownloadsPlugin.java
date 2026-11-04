@@ -10,6 +10,7 @@ import android.content.ComponentName;
 import android.content.ContentResolver;
 import android.content.Context;
 import android.content.Intent;
+import android.util.Log;
 
 import com.getcapacitor.PermissionState;
 import com.getcapacitor.JSObject;
@@ -31,6 +32,7 @@ import org.json.JSONObject;
     @Permission(alias = "notifications", strings = {Manifest.permission.POST_NOTIFICATIONS})
 })
 public class AndroidDownloadsPlugin extends Plugin {
+    private static final String TAG = "AndroidDownloads";
     private static final int TRANSFER_JOB_ID = 24731;
     private static final long MIN_FREE_RESERVE = 64L * 1024 * 1024;
 
@@ -180,12 +182,14 @@ public class AndroidDownloadsPlugin extends Plugin {
                     .setUserInitiated(true)
                     .setEstimatedNetworkBytes(Math.max(0, estimatedBytes), 0);
                 JobScheduler scheduler = (JobScheduler) context.getSystemService(Context.JOB_SCHEDULER_SERVICE);
-                return scheduler.schedule(builder.build()) == JobScheduler.RESULT_SUCCESS;
+                int result = scheduler.schedule(builder.build());
+                if (result != JobScheduler.RESULT_SUCCESS) Log.e(TAG, "JobScheduler rejected the user-initiated transfer job with result " + result);
+                return result == JobScheduler.RESULT_SUCCESS;
             }
             Intent intent = new Intent(context, DownloadTransferService.class);
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent); else context.startService(intent);
             return true;
-        } catch (RuntimeException error) { return false; }
+        } catch (RuntimeException error) { Log.e(TAG, "Could not schedule the transfer", error); return false; }
     }
 
     private void stopTransfer() {
