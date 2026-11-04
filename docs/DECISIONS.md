@@ -133,3 +133,9 @@ Registro cronológico. Cambiar una decisión cuando haya nueva evidencia y dejar
 - **Estado:** destino predeterminado y escritura MediaStore implementados para Android 10+; selector de carpeta alternativo pendiente.
 - **Decisión:** usar `Download/Descargar UCLV` dentro de `MediaStore.Downloads`. Un plugin Capacitor local devuelve la ruta visible y espacio/capacidad del volumen compartido por `StatFs`, sin permiso amplio de almacenamiento. Los archivos se crean como filas privadas `IS_PENDING` y se publican al terminar. Los parciales se guardan en almacenamiento privado de la app. Al encolar se estima el espacio de parcial + copia final + reserva de 64 MiB y se repite la comprobación durante la transferencia. Android 7–9 informa que no está soportado; no inventa cifras. La ruta se muestra, aún no es editable.
 - **Verificación:** en API 36 el plugin reportó 5,63 GB disponibles de 6,23 GB; `df` de Android redondeó a 5,2 GB libres de 5,8 GB, consistente. Se probó el prompt de notificación y denegación. Pendiente volumen secundario/ENOSPC, comprobar desde el gestor de archivos la apertura de un archivo realmente publicado y contraste en dispositivo físico.
+
+## D-015 — Vercel como vista previa estática de UCLV Media
+
+- **Estado:** aceptada para preview de UI/PWA; la aplicación funcional completa sigue local/nativa.
+- **Decisión:** usar Vercel para alojar el frontend Vite compilado en `dist/` bajo el nombre de proyecto `uclv-media`. No migrar el gateway a funciones serverless ni exponer el origen: las colas y parciales necesitan almacenamiento local durable y las rutas `/api/*` no forman parte del build estático.
+- **Consecuencia:** el despliegue permite evaluar la interfaz y shell PWA/offline; las operaciones de catálogo, preview y descargas permanecen deshabilitadas sin un gateway local. El backend no se convierte en servicio público.

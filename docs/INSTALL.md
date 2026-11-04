@@ -1,4 +1,4 @@
-# Instalar y ejecutar Descargar UCLV
+# UCLV Media — instalación y ejecución
 
 ## Web y escritorio (PWA)
 
@@ -21,9 +21,15 @@ GRADLE_USER_HOME="/path/to/gradle-cache" \
 npm run android:build:debug
 ```
 
-La compilación debug genera `android/app/build/outputs/apk/debug/app-debug.apk` (`cu.uclv.descargar`; min SDK 24, target SDK 36; firma debug v2). Se probó el shell con un emulador Android virtual; aún faltan pruebas con un dispositivo físico.
+La compilación debug genera `android/app/build/outputs/apk/debug/app-debug.apk` y la copia lista para instalar `artifacts/UCLV-Media-Android-debug.apk` (`cu.uclv.descargar`; min SDK 24, target SDK 36; firma debug v2). La etiqueta instalada es “UCLV Media”. La copia se valida con `aapt` y SHA-256; el dispositivo físico no está conectado, por lo que falta la instalación en tu teléfono.
 
 El APK incluye el adaptador Android de catálogo y el motor nativo de descargas: cola durable, parciales reanudables, destino `Descargas/Descargar UCLV`, notificaciones y trabajo en segundo plano. El destino público usa MediaStore desde API 29; API 34 o posterior programa trabajos iniciados por el usuario y API 29–33 usa el servicio foreground. En API 36 se validaron instalación, permiso de notificaciones, pausa y persistencia tras cierre forzado, programación UIDT y retirada de la cola. La petición real a `visuales.uclv.cu` expiró, así que no se obtuvo un archivo final ni se verificó publicación MediaStore/Rango contra ese servidor. Las pruebas API 29/34 y teléfono físico siguen pendientes. El APK es debug y no constituye un release firmado para distribución.
+
+## Despliegue estático de demostración en Vercel
+
+Vercel puede publicar el build de Vite y el shell PWA con el proyecto `uclv-media`. Ese host solo entrega archivos estáticos: no ejecuta el gateway local Node que atiende `/api/list`, `/api/file` y `/api/downloads`. Por eso permite revisar la interfaz y probar la instalación/cache offline, pero no sincronizar `visuales.uclv.cu`, previsualizar archivos a través del gateway ni hacer transferencias desde la URL pública. Para uso completo, ejecutar la app con su gateway local o usar el APK Android. No se envían los archivos personales a Vercel.
+
+Vercel debe compilar con `npm run build` y publicar `dist/`; `/sw.js` se sirve sin caché para que el navegador pueda detectar actualizaciones.
 
 ## Datos incluidos en la copia JSON
 
