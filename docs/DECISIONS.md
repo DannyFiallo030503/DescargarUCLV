@@ -155,3 +155,10 @@ Registro cronológico. Cambiar una decisión cuando haya nueva evidencia y dejar
 - **Evidencia:** `/api/health` devuelve `catalogAvailable:false`; `/api/list?path=/` devuelve HTTP 502 `fetch failed` y el encabezado de ejecución confirma `gru1`. Desde la estación de desarrollo, el mismo `GET /` devuelve HTTP 200 desde IP `181.225.254.2`. El servidor devuelve Apache `<pre>` y el parser ya procesa el formato.
 - **Decisión:** conservar solo lectura y fallback de índice offline; no introducir un proxy de terceros ni confiar la cola a Vercel. El cambio de IAD1 a GRU1 no corrigió el egreso al host.
 - **Consecuencia:** compilar/publicar el frontend ya no basta para sincronizar en Vercel. Hace falta alojar el adaptador en una red que sí alcance UCLV o usar el gateway local/APK en una red con acceso.
+
+## D-018 — fallback del PWA desplegado al gateway del mismo equipo
+
+- **Estado:** implementado; pruebas HTTP/CORS y build pasan. Revisión manual de Chrome con permiso de red local pendiente.
+- **Evidencia:** Vercel en IAD1 y GRU1 devolvió `fetch failed`; Node del equipo pudo consultar las tres IPv4 del DNS del origen con HTTP 200. El servidor local escucha solo en loopback y puede actuar como puente desde una computadora con acceso.
+- **Decisión:** cuando la web reconoce Vercel pero su función no alcanza el catálogo, prueba `http://127.0.0.1:4179`. Si el gateway responde, catálogo, previews, cola y destino usan ese mismo origen. El gateway permite CORS solo desde `https://uclv-media.vercel.app`, resuelve preflight y Private Network Access; otros sitios no reciben acceso CORS. Los cambios siguen requiriendo `X-UCLV-Request` y JSON.
+- **Consecuencia:** para usar la web publicada en escritorio hay que ejecutar `npm run gateway` en el mismo equipo y aceptar el permiso local de Chrome si aparece. La PWA en un teléfono no puede acceder al loopback de otra computadora; allí se usa la APK o un gateway alojado en una red accesible. Vercel no recibe archivos del usuario.

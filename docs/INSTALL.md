@@ -27,9 +27,11 @@ El APK incluye el adaptador Android de catálogo y el motor nativo de descargas:
 
 ## Despliegue en Vercel
 
-Proyecto Vercel `uclv-media`: https://uclv-media.vercel.app/ (protegido con el SSO del equipo Vercel). El despliegue incluye `/api/health` y `/api/list`, un proxy de solo lectura al índice de `visuales.uclv.cu`. El 5 de noviembre de 2026, la función en la región `gru1` devolvió `fetch failed` al consultar ese host aunque el origen respondía desde el equipo de desarrollo. La función refleja el estado como desconectado; conserva el índice local y permite reintentar cuando Vercel pueda alcanzar el origen.
+Proyecto Vercel `uclv-media`: https://uclv-media.vercel.app/ (protegido con el SSO del equipo Vercel). Las funciones `/api/health` y `/api/list` intentan consultar `visuales.uclv.cu`. El 5 de noviembre de 2026, la función en `gru1` devolvió `fetch failed` aunque el origen respondía desde el equipo de desarrollo.
 
-La web indica `Download` como carpeta predeterminada del navegador. El navegador decide la ruta física final y la web no puede medir su espacio libre ni administrar una cola durable. Para descargas por lotes, pausa/reanudación y selección de ruta real, usar el APK Android o el gateway local. No se envían archivos personales a Vercel.
+En escritorio, la PWA intenta entonces el gateway local en `http://127.0.0.1:4179`. Para sincronizar desde la URL de Vercel, inicia `npm run gateway` en ese mismo equipo y permite el acceso local que solicite Chrome. La web usa ese gateway para índice, previews y cola durable. Si el navegador no permite acceso local, la búsqueda guardada sigue disponible y la sincronización queda desconectada. En un teléfono, la URL de Vercel no puede llegar al gateway de otra computadora; usa la APK o aloja un gateway dentro de la red accesible.
+
+Si no encuentra gateway local, la web indica `Download` como carpeta predeterminada del navegador. El navegador decide la ruta física final y la web no puede medir su espacio libre ni administrar una cola durable. Con el gateway local, la cola y ruta quedan administradas en este equipo. No se envían archivos personales a Vercel.
 
 El repositorio GitHub aún no está enlazado a Vercel, así que los despliegues se publican manualmente.
 

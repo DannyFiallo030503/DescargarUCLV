@@ -4,6 +4,15 @@ import { LocalGatewayCatalogAdapter } from './catalog-adapter'
 describe('LocalGatewayCatalogAdapter failure policy', () => {
   afterEach(() => vi.unstubAllGlobals())
 
+  it('can call the local companion from the deployed Vercel UI', async () => {
+    const fetchStub = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ entries: [] }) })
+    vi.stubGlobal('fetch', fetchStub)
+
+    await new LocalGatewayCatalogAdapter('http://127.0.0.1:4179').listDirectory('/')
+
+    expect(fetchStub).toHaveBeenCalledWith('http://127.0.0.1:4179/api/list?path=%2F', expect.any(Object))
+  })
+
   it('marks gateway timeouts as non-retryable and deferrable', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(504, 'El origen tardó demasiado.')))
 

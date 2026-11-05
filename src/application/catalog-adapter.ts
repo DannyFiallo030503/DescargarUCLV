@@ -16,8 +16,11 @@ export interface CatalogAdapter {
 }
 
 export class LocalGatewayCatalogAdapter implements CatalogAdapter {
+  constructor(private readonly baseUrl = '') {}
+
   async listDirectory(path: string, signal?: AbortSignal): Promise<CatalogNode[]> {
-    const response = await fetch(`/api/list?path=${encodeURIComponent(path)}`, { signal, cache: 'no-store' })
+    const url = `${this.baseUrl}/api/list?path=${encodeURIComponent(path)}`
+    const response = await fetch(url, { signal, cache: 'no-store' })
     if (!response.ok) {
       const payload = await response.json().catch(() => ({})) as { error?: string }
       const error = new Error(payload.error || `El origen respondió HTTP ${response.status}.`)

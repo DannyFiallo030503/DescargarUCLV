@@ -81,6 +81,28 @@ describe('gateway HTTP black-box contract', () => {
     expect(response.json()).toEqual({ ok: true, source: 'https://visuales.uclv.cu' })
   })
 
+  it('autoriza únicamente el origen Vercel de la app y permite el preflight del navegador', async () => {
+    const response = await request('/api/health', { headers: { origin: 'https://uclv-media.vercel.app' } })
+    expect(response.headers['access-control-allow-origin']).toBe('https://uclv-media.vercel.app')
+
+    const preflight = await request('/api/list', {
+      method: 'OPTIONS',
+      headers: {
+        origin: 'https://uclv-media.vercel.app',
+        'access-control-request-method': 'GET',
+        'access-control-request-private-network': 'true',
+      },
+    })
+    expect(preflight.status).toBe(204)
+    expect(preflight.headers['access-control-allow-private-network']).toBe('true')
+    expect(preflight.headers['access-control-allow-methods']).toContain('GET')
+  })
+
+  it('no concede CORS a sitios ajenos', async () => {
+    const response = await request('/api/health', { headers: { origin: 'https://sitio-ajeno.example' } })
+    expect(response.headers['access-control-allow-origin']).toBeUndefined()
+  })
+
   it('evita que el navegador conserve index y service worker antiguos tras una actualización', async () => {
     const index = await request('/')
     const worker = await request('/sw.js')
@@ -106,6 +128,20 @@ describe('gateway HTTP black-box contract', () => {
     })
     expect(response.status).toBe(400)
     expect(response.json()).toMatchObject({ error: expect.stringContaining('origen local') })
+  })
+
+  it('permite que la app publicada gestione el destino pasando la misma validación de cambios', async () => {
+    const response = await request('/api/destination', {
+      method: 'POST',
+      headers: {
+        origin: 'https://uclv-media.vercel.app',
+        'content-type': 'application/json',
+        'x-uclv-request': '1',
+      },
+      body: JSON.stringify({ destination: join(temporaryRoot, 'downloads') }),
+    })
+    expect(response.status).toBe(200)
+    expect(response.headers['access-control-allow-origin']).toBe('https://uclv-media.vercel.app')
   })
 
   it('rechaza traversal en la frontera HTTP antes de consultar el origen', async () => {

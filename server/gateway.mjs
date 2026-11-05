@@ -11,6 +11,7 @@ const projectRoot = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const distRoot = join(projectRoot, 'dist')
 const sourceOrigin = 'https://visuales.uclv.cu'
 const sourceRoot = `${sourceOrigin}/`
+const remoteAppOrigins = new Set(['https://uclv-media.vercel.app'])
 const port = Number(process.env.UCLV_PORT || 4179)
 const requestTimeoutMs = 15_000
 const maxListingBytes = 16 * 1024 * 1024
@@ -39,6 +40,27 @@ function sendJson(response, status, value) {
   response.end(JSON.stringify(value))
 }
 
+function applyBrowserAccess(request, response) {
+  const origin = request.headers.origin
+  if (!origin) return false
+  let parsed
+  try { parsed = new URL(origin) } catch { return false }
+  const localOrigin = ['127.0.0.1', 'localhost'].includes(parsed.hostname)
+  if (!localOrigin && !remoteAppOrigins.has(parsed.origin)) return false
+  response.setHeader('Access-Control-Allow-Origin', origin)
+  response.setHeader('Vary', 'Origin')
+  if (request.method === 'OPTIONS') {
+    response.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, POST, DELETE, OPTIONS')
+    response.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-UCLV-Request, Range, If-Range')
+    response.setHeader('Access-Control-Max-Age', '600')
+    response.setHeader('Access-Control-Allow-Private-Network', 'true')
+    response.writeHead(204)
+    response.end()
+    return true
+  }
+  return false
+}
+
 async function readJson(request, maxBytes = 2 * 1024 * 1024) {
   const chunks = []
   let total = 0
@@ -55,7 +77,8 @@ function validateLocalMutation(request) {
   const origin = request.headers.origin
   if (!origin) throw new Error('Falta el origen local de la solicitud.')
   const parsed = new URL(origin)
-  if (!['http:', 'https:'].includes(parsed.protocol) || !['127.0.0.1', 'localhost'].includes(parsed.hostname)) {
+  if (!['http:', 'https:'].includes(parsed.protocol)
+    || (!['127.0.0.1', 'localhost'].includes(parsed.hostname) && !remoteAppOrigins.has(parsed.origin))) {
     throw new Error('Solo se aceptan cambios desde la aplicación local.')
   }
   if (request.headers['x-uclv-request'] !== '1' || !(request.headers['content-type'] || '').includes('application/json')) {
@@ -213,6 +236,7 @@ function serveStatic(request, response, pathname) {
 
 const server = createServer(async (request, response) => {
   try {
+    if (applyBrowserAccess(request, response)) return
     const url = new URL(request.url || '/', `http://${request.headers.host || '127.0.0.1'}`)
     if (url.pathname === '/api/health') return sendJson(response, 200, { ok: true, source: sourceOrigin })
     if (url.pathname === '/api/downloads' && request.method === 'GET') {
