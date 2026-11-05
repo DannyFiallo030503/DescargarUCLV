@@ -134,9 +134,24 @@ Registro cronológico. Cambiar una decisión cuando haya nueva evidencia y dejar
 - **Decisión:** usar `Download/Descargar UCLV` dentro de `MediaStore.Downloads`. Un plugin Capacitor local devuelve la ruta visible y espacio/capacidad del volumen compartido por `StatFs`, sin permiso amplio de almacenamiento. Los archivos se crean como filas privadas `IS_PENDING` y se publican al terminar. Los parciales se guardan en almacenamiento privado de la app. Al encolar se estima el espacio de parcial + copia final + reserva de 64 MiB y se repite la comprobación durante la transferencia. Android 7–9 informa que no está soportado; no inventa cifras. La ruta se muestra, aún no es editable.
 - **Verificación:** en API 36 el plugin reportó 5,63 GB disponibles de 6,23 GB; `df` de Android redondeó a 5,2 GB libres de 5,8 GB, consistente. Se probó el prompt de notificación y denegación. Pendiente volumen secundario/ENOSPC, comprobar desde el gestor de archivos la apertura de un archivo realmente publicado y contraste en dispositivo físico.
 
-## D-015 — Vercel como vista previa estática de UCLV Media
+## D-015 — Vercel como vista previa estática de UCLV Media (supersedida)
 
 - **Estado:** producción `READY` como instantánea estática; SSO del equipo habilitado; conexión automática de GitHub pendiente.
 - **Decisión:** alojar el frontend Vite compilado en `dist/` bajo el proyecto `uclv-media` y alias `https://uclv-media.vercel.app/`. No migrar el gateway a funciones serverless ni exponer el origen: las colas/parciales necesitan almacenamiento local durable y las rutas `/api/*` no forman parte del build estático.
 - **Verificación:** raíz, manifiesto, service worker, JavaScript, CSS y ambos iconos respondieron 200; `manifest.webmanifest` declara `UCLV Media`, `standalone` y `/`. `/api/health` responde 404, como se espera en un host solo estático.
 - **Consecuencia:** el despliegue permite evaluar interfaz y shell PWA/offline; catálogo, previews a través del gateway y transferencias requieren el gateway local o APK. Vercel no recibe archivos personales. El repo GitHub no está enlazado al proveedor Git, por lo que el deploy actual es manual y los pushes no lo actualizan.
+
+## D-016 — soportar los dos formatos del autoíndice Apache
+
+- **Estado:** parser corregido; APK debug reconstruido y versión de producción actualizada. Smoke de red Android pendiente; conectividad Vercel sigue fallando.
+- **Evidencia:** el `GET /` de `visuales.uclv.cu` del 2026-11-05 respondió 200 con un `<pre>` de 2.147 bytes, 14 carpetas y 5 archivos. El parser aceptaba solo tablas `<tr>/<td>`, por lo que ambos adaptadores, nativo y gateway/serverless, podían convertir una respuesta válida en un índice vacío.
+- **Decisión:** `parseApacheIndex` acepta filas de tabla y enlaces en `<pre>`; interpreta el último token posterior al enlace como tamaño y `-` como directorio. Ambos transportes mantienen el mismo parser y las mismas reglas de host/ruta.
+- **Verificación:** fixture de `<pre>`, fixture de tabla heredada y parseo del cuerpo real de la raíz (19 entradas). El APK debug compila; el AVD disponible no arranca por arquitectura ARM no soportada por QEMU2. Vercel devuelve `fetch failed` antes de entregar HTML al parser.
+- **Consecuencia:** los listados se hacen visibles al sincronizar. El cambio no evita que el host Vercel bloquee o no alcance la red del origen; ese fallo de transporte permanece diferenciado del parser.
+
+## D-017 — funciones Vercel y compatibilidad de red con el origen
+
+- **Estado:** API de solo lectura desplegada en `gru1`; conectividad al origen no disponible desde esa región.
+- **Evidencia:** `/api/health` devuelve `catalogAvailable:false`; `/api/list?path=/` devuelve HTTP 502 `fetch failed` y el encabezado de ejecución confirma `gru1`. Desde la estación de desarrollo, el mismo `GET /` devuelve HTTP 200 desde IP `181.225.254.2`. El servidor devuelve Apache `<pre>` y el parser ya procesa el formato.
+- **Decisión:** conservar solo lectura y fallback de índice offline; no introducir un proxy de terceros ni confiar la cola a Vercel. El cambio de IAD1 a GRU1 no corrigió el egreso al host.
+- **Consecuencia:** compilar/publicar el frontend ya no basta para sincronizar en Vercel. Hace falta alojar el adaptador en una red que sí alcance UCLV o usar el gateway local/APK en una red con acceso.

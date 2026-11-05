@@ -13,6 +13,7 @@ El snapshot revisado contiene alrededor de 30 mil enlaces únicos, todos a direc
 | `HEAD /` | 200, Apache, HTML | El origen expone un autoindex. |
 | `GET /` con rango pequeño | 206 | El índice raíz era corto; un listado de carpeta puede ignorar `Range`. |
 | `GET` de carpetas de prueba | 200, HTML de tabla Apache | El parser debe manejar tabla y `<pre>`, entidades, rutas codificadas y tamaños. |
+| `GET /` (2026-11-05) | 200, Apache 2.4.57, autoindex `<pre>`; 2.147 bytes, 14 carpetas y 5 archivos en la raíz | El parser inicial solo procesaba tablas `<tr>/<td>` y devolvía cero elementos para esta respuesta. Se añadió soporte `<pre>` y se validó con el cuerpo capturado. |
 | `HEAD` de un archivo de prueba | 200, MIME y tamaño | Algunas respuestas exponen ETag y Last-Modified. |
 | `GET` de un byte | 206 con `Content-Range` | El origen observado admite rangos para archivos. |
 | Rango fuera de límite | 416 | El cliente debe validar tamaño y offset antes de anexar. |

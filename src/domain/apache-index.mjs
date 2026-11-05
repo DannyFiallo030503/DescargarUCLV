@@ -39,14 +39,35 @@ export function parseApacheIndex(html, directoryUrl) {
   const base = new URL(directoryUrl)
   const safeBasePath = safeDecodedPath(base)
   const document = parse(html)
-  const rows = findElements(document, 'tr')
-  const entries = []
-  const seen = new Set()
-
-  for (const row of rows) {
+  const candidates = []
+  for (const row of findElements(document, 'tr')) {
     const cells = findElements(row, 'td')
     if (cells.length < 2) continue
     const anchor = findElements(cells[1], 'a')[0]
+    if (!anchor) continue
+    candidates.push({ anchor, sizeLabel: cells[3] ? textContent(cells[3]).trim() : '' })
+  }
+  // Apache 2.4 can render indexes as a <pre> list instead of a table. In that
+  // format the file size is the final token after each link (directories use -).
+  for (const pre of findElements(document, 'pre')) {
+    const anchors = findElements(pre, 'a')
+    const siblings = pre.childNodes || []
+    for (const anchor of anchors) {
+      const index = siblings.indexOf(anchor)
+      let trailingText = ''
+      if (index >= 0) {
+        for (let cursor = index + 1; cursor < siblings.length && siblings[cursor].tagName !== 'a'; cursor += 1) {
+          trailingText += textContent(siblings[cursor])
+        }
+      }
+      const lastToken = trailingText.trim().split(/\s+/).at(-1) || ''
+      candidates.push({ anchor, sizeLabel: lastToken === '-' ? '' : lastToken })
+    }
+  }
+  const entries = []
+  const seen = new Set()
+
+  for (const { anchor, sizeLabel } of candidates) {
     const href = anchor?.attrs?.find((attribute) => attribute.name === 'href')?.value
     if (!href || href.startsWith('?') || href === '../' || href === './') continue
     let remote
@@ -58,7 +79,6 @@ export function parseApacheIndex(html, directoryUrl) {
     const isDirectory = href.endsWith('/')
     const name = textContent(anchor).trim().replace(/\/$/, '')
     if (!name || name === 'Parent Directory') continue
-    const sizeLabel = cells[3] ? textContent(cells[3]).trim() : ''
     if (seen.has(relativePath)) continue
     seen.add(relativePath)
     entries.push({
