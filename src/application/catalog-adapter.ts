@@ -16,11 +16,15 @@ export interface CatalogAdapter {
 }
 
 export class LocalGatewayCatalogAdapter implements CatalogAdapter {
-  constructor(private readonly baseUrl = '') {}
+  constructor(private readonly baseUrl = '', private readonly accessToken = '') {}
 
   async listDirectory(path: string, signal?: AbortSignal): Promise<CatalogNode[]> {
     const url = `${this.baseUrl}/api/list?path=${encodeURIComponent(path)}`
-    const response = await fetch(url, { signal, cache: 'no-store' })
+    const response = await fetch(url, {
+      signal,
+      cache: 'no-store',
+      ...(this.accessToken ? { headers: { 'X-UCLV-Access': this.accessToken } } : {}),
+    })
     if (!response.ok) {
       const payload = await response.json().catch(() => ({})) as { error?: string }
       const error = new Error(payload.error || `El origen respondió HTTP ${response.status}.`)

@@ -158,7 +158,15 @@ Registro cronológico. Cambiar una decisión cuando haya nueva evidencia y dejar
 
 ## D-018 — fallback del PWA desplegado al gateway del mismo equipo
 
-- **Estado:** implementado; pruebas HTTP/CORS y build pasan. Revisión manual de Chrome con permiso de red local pendiente.
+- **Estado:** implementado para escritorio; el flujo móvil por loopback queda supersedido por D-019.
 - **Evidencia:** Vercel en IAD1 y GRU1 devolvió `fetch failed`; Node del equipo pudo consultar las tres IPv4 del DNS del origen con HTTP 200. El servidor local escucha solo en loopback y puede actuar como puente desde una computadora con acceso.
 - **Decisión:** cuando la persona pulsa sincronizar en Vercel y la función no alcanza el catálogo, la web prueba `http://127.0.0.1:4179`. Chrome solicita permiso de loopback desde el origen HTTPS; si el gateway responde, catálogo, previews, cola y destino usan ese mismo origen. El gateway permite CORS solo desde `https://uclv-media.vercel.app`, incluyendo el preflight estándar; otros sitios no reciben acceso CORS. Los cambios siguen requiriendo `X-UCLV-Request` y JSON.
 - **Consecuencia:** para usar la web publicada en escritorio hay que ejecutar `npm run gateway` en el mismo equipo y aceptar el permiso local de Chrome si aparece. La PWA en un teléfono no puede acceder al loopback de otra computadora; allí se usa la APK o un gateway alojado en una red accesible. Vercel no recibe archivos del usuario.
+
+## D-019 — acceso móvil mediante puente temporal autenticado
+
+- **Estado:** relay y Quick Tunnel temporales activos; API, CORS, índice raíz y construcción APK verificados. Navegación real desde el teléfono pendiente de validación de campo.
+- **Evidencia:** el móvil no puede usar el loopback de la computadora, ni en Wi-Fi ni por datos. Vercel tampoco puede alcanzar `visuales.uclv.cu` desde su runtime. El APK tiene transporte nativo y cola Android; la PWA requiere que un equipo con acceso al origen actúe como puente.
+- **Decisión:** añadir un relay local que solo escuche en loopback, permita rutas `/api` explícitas y exija una clave aleatoria temporal. El PWA guarda URL/clave en almacenamiento local; previews reciben tickets de lectura limitados por ruta y tiempo, para que `<img>`/`<video>` no expongan la clave. La APK conserva su transporte/cola nativos para descargar al dispositivo.
+- **Consecuencias:** la conexión web desde móvil depende de mantener el gateway y túnel activos; la dirección temporal cambia al reiniciar y cualquiera que obtenga la URL necesita además la clave. El PWA permite descargar archivos desde la vista previa al gestor del navegador; las colas PWA alojadas en el gateway guardan archivos en la computadora anfitriona. La cola nativa del APK descarga y reanuda en el `Download` del teléfono. La PWA no promete descargas prolongadas si el navegador se suspende.
+- **Corrección de rutas:** los parsers de query de Node/Vercel ya decodifican una vez el parámetro `path`; gateway local y `api/list.js` validan esos segmentos como texto y los codifican al construir la URL upstream. Esto admite nombres con `%` literal sin tratarlo como una secuencia `%XX` incompleta, manteniendo el rechazo de traversal y separadores. El relay aplica la misma regla a rutas JSON.

@@ -248,6 +248,7 @@ h1 { margin-bottom: 12px; font: 800 clamp(28px, 3.3vw, 42px)/1.16 Manrope, sans-
 .media-title h2 { overflow: hidden; margin: 0 0 3px; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
 .media-title small { display: block; overflow: hidden; color: #aab3ab; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .media-image, .media-video { display: block; width: 100%; max-height: calc(92vh - 140px); min-height: 100px; flex: 1; border-radius: 10px; background: #090b0a; object-fit: contain; }
+.media-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .media-original { align-self: flex-start; color: #c9e6d1; }
 .download-message { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 14px; border: 1px solid #ecd9aa; border-radius: 12px; background: #fff9e9; padding: 11px 13px; color: #705316; font-size: 12px; line-height: 1.5; }
 .download-jobs { display: grid; gap: 12px; }

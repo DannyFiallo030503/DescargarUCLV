@@ -117,6 +117,10 @@ Auditoría local y sondeo HTTP mínimo completados: ver `SOURCE_AUDIT.md`. Parse
 
 **Ejecución actual:** scaffold Vite/React/TypeScript, gateway local, PWA, lockfile y scripts de build/test implementados. Build y auditoría de dependencias pasan. Sin CI añadida. No cerrar G3 hasta completar la revisión de seguridad y el proceso reproducible de distribución nativa.
 
+**Incidencia móvil (2026-11-05):** se localizó la decodificación doble en las rutas y la decodificación estricta de hrefs del parser Apache. Gateway local y API Vercel validan `path` después de la decodificación estándar del query parser, preservando `%` literal; el parser Apache tolera secuencias percent malformadas/bytes UTF-8 inválidos sin abortar el listado. El APK debug se reconstruyó (SHA-256 `d798fec578b683085cebfab9f51349b75fb52c4003c62044c04e23bb5f036b74`). El build se verificó; la confirmación funcional en el teléfono requiere instalar ese APK.
+
+Para el PWA móvil se añadió conexión a un relay local autenticado, tickets temporales de vista previa y descarga directa desde el visor. La revisión se publicó en Vercel; Quick Tunnel `https://growing-normal-stating-misc.trycloudflare.com` enruta al relay en el puerto 4180. Smoke externo de `/api/health`, `/api/list?path=/` (20 entradas), preflight CORS y emisión de ticket pasó. El túnel solo vive mientras esta sesión mantenga el proceso; aún falta la comprobación desde Chrome físico. La cola del gateway usa el disco del ordenador puente; el APK descarga y reanuda en el teléfono. Quick Tunnels son solo para pruebas.
+
 ## Fase 4 — dominio, persistencia y migraciones
 
 **Tareas**

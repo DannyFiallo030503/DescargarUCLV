@@ -21,7 +21,10 @@ export class NativeCatalogAdapter implements CatalogAdapter {
 
   async checkConnection(signal?: AbortSignal): Promise<boolean> {
     const response = await this.requestFollowingRedirects(sourceUrlForPath('/'), 'HEAD', signal)
-    return response.status >= 200 && response.status < 400
+    if (response.status < 200 || response.status >= 400) {
+      throw new Error(`El catálogo respondió HTTP ${response.status} al comprobar la conexión.`)
+    }
+    return true
   }
 
   async listDirectory(path: string, signal?: AbortSignal): Promise<CatalogNode[]> {

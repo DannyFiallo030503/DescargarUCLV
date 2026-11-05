@@ -60,8 +60,17 @@ function App() {
   const [exampleMode, setExampleMode] = useState(true)
   const [gatewayOnline, setGatewayOnline] = useState(false)
   const [catalogOnline, setCatalogOnline] = useState(false)
+  const [connectionChecking, setConnectionChecking] = useState(false)
+  const [connectionError, setConnectionError] = useState('')
   const [vercelCatalog, setVercelCatalog] = useState(false)
   const [apiBase, setApiBase] = useState('')
+  const [gatewayAccessToken, setGatewayAccessToken] = useState('')
+  const [gatewayUrlDraft, setGatewayUrlDraft] = useState('')
+  const [gatewayTokenDraft, setGatewayTokenDraft] = useState('')
+  const [gatewayConnecting, setGatewayConnecting] = useState(false)
+  const [gatewayConnectionError, setGatewayConnectionError] = useState('')
+  const [previewTicket, setPreviewTicket] = useState('')
+  const [previewTicketError, setPreviewTicketError] = useState('')
   const [nativeDestination, setNativeDestination] = useState<AndroidDestinationInfo | null>(null)
   const nativePlatform = Capacitor.isNativePlatform()
   const mobileBrowser = typeof navigator !== 'undefined' && (
@@ -100,6 +109,11 @@ function App() {
   const searchInputRef = useRef<HTMLInputElement>(null)
   const dialogReturnFocusRef = useRef<HTMLElement | null>(null)
   const apiUrl = (path: string) => `${apiBase}${path}`
+  const apiFetch = (path: string, init: RequestInit = {}) => {
+    const headers = new Headers(init.headers)
+    if (gatewayAccessToken) headers.set('X-UCLV-Access', gatewayAccessToken)
+    return fetch(apiUrl(path), { ...init, headers })
+  }
 
   useEffect(() => {
     const handleShortcut = (event: KeyboardEvent) => {
@@ -175,9 +189,51 @@ function App() {
         await catalogRepository.ensureFixture()
         await refreshLocalData(true)
         setBrowserStorage(await inspectBrowserStorage())
+        const savedGatewayUrl = localStorage.getItem('uclv-mobile-gateway-url') || ''
+        const savedGatewayToken = localStorage.getItem('uclv-mobile-gateway-token') || ''
+        if (savedGatewayUrl && savedGatewayToken) {
+          setGatewayUrlDraft(savedGatewayUrl)
+          setGatewayTokenDraft(savedGatewayToken)
+          try {
+            const health = await fetch(`${savedGatewayUrl}/api/health`, {
+              cache: 'no-store', signal: AbortSignal.timeout(4_000),
+              headers: { 'X-UCLV-Access': savedGatewayToken },
+            })
+            if (health.ok) {
+              if (active) {
+                setApiBase(savedGatewayUrl)
+                setGatewayAccessToken(savedGatewayToken)
+                setGatewayOnline(true)
+                setCatalogOnline(true)
+                setVercelCatalog(false)
+              }
+              if (nativePlatform) {
+                const [destination, snapshot] = await Promise.all([
+                  androidDownloads.getDestinationInfo(),
+                  androidDownloads.getSnapshot(),
+                ])
+                if (active) {
+                  setNativeDestination(destination)
+                  setDownloadSnapshot(snapshot as DownloadSnapshot)
+                }
+              } else {
+                const downloads = await fetch(`${savedGatewayUrl}/api/downloads`, {
+                  cache: 'no-store', headers: { 'X-UCLV-Access': savedGatewayToken },
+                })
+                if (downloads.ok && active) setDownloadSnapshot(await downloads.json() as DownloadSnapshot)
+              }
+              return
+            }
+          } catch {
+            if (active) setGatewayConnectionError('El túnel guardado ya no responde. Inicia uno nuevo y actualiza su dirección.')
+          }
+        }
         if (nativePlatform) {
           const [online] = await Promise.all([
-            nativeCatalog.current!.checkConnection(),
+            nativeCatalog.current!.checkConnection().catch((error: unknown) => {
+              if (active) setConnectionError(error instanceof Error ? error.message : String(error))
+              return false
+            }),
             androidDownloads.getDestinationInfo().then((info) => {
               if (active) {
                 setNativeDestination(info)
@@ -237,6 +293,24 @@ function App() {
     }, 100)
     return () => { active = false; clearTimeout(timer) }
   }, [query, nodes])
+
+  useEffect(() => {
+    let active = true
+    setPreviewTicket('')
+    setPreviewTicketError('')
+    if (!previewNode || nativePlatform || !gatewayAccessToken) return () => { active = false }
+    void apiFetch('/api/mobile-ticket', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ path: previewNode.relativePath }),
+    }).then(async (response) => {
+      const payload = await response.json().catch(() => ({})) as { ticket?: string; error?: string }
+      if (!response.ok || !payload.ticket) throw new Error(payload.error || 'No se pudo preparar la vista previa.')
+      if (active) setPreviewTicket(payload.ticket)
+    }).catch((error: unknown) => {
+      if (active) setPreviewTicketError(error instanceof Error ? error.message : 'No se pudo preparar la vista previa.')
+    })
+    return () => { active = false }
+  }, [previewNode, nativePlatform, gatewayAccessToken, apiBase])
 
   const nodeById = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes])
   const currentNode = nodeById.get(currentPath) ?? nodeById.get('/')
@@ -298,6 +372,7 @@ function App() {
         throw new Error('El gateway local no respondió correctamente.')
       }
       setApiBase(localBase)
+      setGatewayAccessToken('')
       setGatewayOnline(true)
       setCatalogOnline(true)
       setVercelCatalog(false)
@@ -308,6 +383,44 @@ function App() {
       const message = 'Chrome no pudo conectar con el gateway local. Comprueba que esté abierto y permite el acceso a la red local para UCLV Media en los permisos del sitio.'
       setSyncState((current) => ({ ...current, phase: 'error', lastError: message }))
       return null
+    }
+  }
+
+  async function connectRemoteGateway(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setGatewayConnecting(true)
+    setGatewayConnectionError('')
+    try {
+      const parsed = new URL(gatewayUrlDraft.trim())
+      if (parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.search || parsed.hash) {
+        throw new Error('Usa la dirección HTTPS completa del túnel, sin usuario, clave ni parámetros.')
+      }
+      const base = parsed.origin
+      const token = gatewayTokenDraft.trim()
+      if (!token) throw new Error('Escribe la clave temporal que muestra el gateway en el ordenador.')
+      const health = await fetch(`${base}/api/health`, {
+        cache: 'no-store', signal: AbortSignal.timeout(15_000),
+        headers: { 'X-UCLV-Access': token },
+      })
+      if (!health.ok) {
+        const body = await health.json().catch(() => ({})) as { error?: string }
+        throw new Error(body.error || `El gateway respondió HTTP ${health.status}.`)
+      }
+      localStorage.setItem('uclv-mobile-gateway-url', base)
+      localStorage.setItem('uclv-mobile-gateway-token', token)
+      setApiBase(base)
+      setGatewayAccessToken(token)
+      setGatewayOnline(true)
+      setCatalogOnline(true)
+      setVercelCatalog(false)
+      setGatewayTokenDraft(token)
+      setGatewayConnectionError('')
+      const downloads = await fetch(`${base}/api/downloads`, { cache: 'no-store', headers: { 'X-UCLV-Access': token } })
+      if (downloads.ok) setDownloadSnapshot(await downloads.json() as DownloadSnapshot)
+    } catch (error) {
+      setGatewayConnectionError(error instanceof Error ? error.message : 'No se pudo conectar con el gateway móvil.')
+    } finally {
+      setGatewayConnecting(false)
     }
   }
 
@@ -322,8 +435,10 @@ function App() {
     // Request storage protection directly from the user's Sync click before awaiting network work.
     const storageRequest = requestPersistentStorage()
     setBrowserStorage(await storageRequest)
-    syncService.current ??= new CatalogSyncService(
-      nativePlatform ? nativeCatalog.current! : new LocalGatewayCatalogAdapter(selectedApiBase),
+    syncService.current = new CatalogSyncService(
+      nativePlatform && !(selectedApiBase && gatewayAccessToken)
+        ? nativeCatalog.current!
+        : new LocalGatewayCatalogAdapter(selectedApiBase, gatewayAccessToken),
       (entries) => searchWorker.current?.update(entries),
     )
     const result = await syncService.current.run((state) => {
@@ -337,6 +452,27 @@ function App() {
     await refreshLocalData()
   }
 
+  async function retryNativeConnection() {
+    if (!nativePlatform || connectionChecking) return
+    setConnectionChecking(true)
+    setConnectionError('')
+    try {
+      if (apiBase && gatewayAccessToken) {
+        const health = await apiFetch('/api/health', { cache: 'no-store', signal: AbortSignal.timeout(15_000) })
+        if (!health.ok) throw new Error(`El gateway respondió HTTP ${health.status}.`)
+      } else {
+        await nativeCatalog.current!.checkConnection()
+      }
+      setCatalogOnline(true)
+      setConnectionError('')
+    } catch (error) {
+      setCatalogOnline(false)
+      setConnectionError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setConnectionChecking(false)
+    }
+  }
+
   function pauseSync() {
     syncService.current?.pause()
   }
@@ -347,7 +483,7 @@ function App() {
         setDownloadSnapshot(await androidDownloads.getSnapshot() as DownloadSnapshot)
         return
       }
-      const response = await fetch(apiUrl('/api/downloads'), { cache: 'no-store' })
+      const response = await apiFetch('/api/downloads', { cache: 'no-store' })
       if (response.ok) setDownloadSnapshot(await response.json() as DownloadSnapshot)
     } catch { /* keep the most recent local snapshot visible while offline */ }
   }
@@ -360,7 +496,7 @@ function App() {
         setDownloadMessage(action === 'pause' ? 'La cola quedó pausada. Los avances parciales se conservaron.' : action === 'resume' ? 'Se reanudó la cola guardada.' : 'Se quitó la cola; los archivos terminados se conservaron en Descargas.')
         return
       }
-      const response = await fetch(apiUrl(url), {
+      const response = await apiFetch(url, {
         method,
         headers: { 'content-type': 'application/json', 'x-uclv-request': '1' },
         ...(method === 'POST' ? { body: JSON.stringify(body ?? {}) } : {}),
@@ -376,7 +512,7 @@ function App() {
   async function saveDestination(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     try {
-      const response = await fetch(apiUrl('/api/destination'), {
+      const response = await apiFetch('/api/destination', {
         method: 'POST', headers: { 'content-type': 'application/json', 'x-uclv-request': '1' },
         body: JSON.stringify({ destination: destinationDraft.trim() }),
       })
@@ -488,9 +624,9 @@ function App() {
         setCurrentScreen('downloads')
         return
       }
-      const response = await fetch(apiUrl('/api/downloads'), {
+      const response = await apiFetch('/api/downloads', {
         method: 'POST',
-        headers: { 'content-type': 'application/json', 'x-uclv-request': '1' },
+      headers: { 'content-type': 'application/json', 'x-uclv-request': '1' },
         body: JSON.stringify({ items }),
       })
       const result = await response.json()
@@ -672,7 +808,12 @@ function App() {
         ? <button className="button button-secondary" onClick={pauseSync}><Pause size={16} />Pausar</button>
         : catalogOnline || (vercelCatalog && !mobileBrowser)
           ? <button className="button button-primary" onClick={() => void startSync()}><Download size={16} />{!catalogOnline && vercelCatalog ? 'Conectar y sincronizar' : paused ? 'Continuar' : partial ? `Reintentar ${syncState.deferredDirectories ?? ''} carpetas` : completed ? 'Actualizar índice' : 'Sincronizar índice'}</button>
+          : mobileWebWithoutGateway
+            ? <button className="button button-primary" onClick={() => navigate('settings')}>Conectar gateway móvil</button>
+          : nativePlatform
+            ? <button className="button button-secondary" onClick={() => void retryNativeConnection()} disabled={connectionChecking}><Wifi size={16}/>{connectionChecking ? 'Comprobando…' : 'Probar conexión'}</button>
           : <span className="sync-offline"><WifiOff size={15} />Catálogo sin conexión</span>}
+      {nativePlatform && connectionError && <span className="inline-error" role="status">{connectionError}</span>}
     </section>
   }
 
@@ -707,7 +848,7 @@ function App() {
         {crumbs.map((crumb) => <span key={crumb.id} className="breadcrumb-part"><ChevronRight size={14}/><button onClick={() => setCurrentPath(crumb.id)}>{crumb.name}</button></span>)}
       </div>
       <div className="page-title-row"><div><p className="eyebrow">{searching ? 'Búsqueda en el dispositivo' : 'Explorar carpetas'}</p><h1>{searching ? 'Resultados' : currentNode?.name ?? 'Biblioteca'}</h1><p className="page-subtitle">{searching ? `Coincidencias para “${query}” en el índice guardado.` : 'Navega por el contenido y selecciona solo lo que quieres guardar.'}</p></div>
-        {!searching && <button className="button button-secondary" onClick={() => void startSync()} disabled={(!catalogOnline && (!vercelCatalog || mobileBrowser)) || syncState.phase === 'running'}><Download size={16}/>{!catalogOnline && vercelCatalog && mobileBrowser ? 'Gateway no disponible en este teléfono' : !catalogOnline && vercelCatalog ? 'Conectar gateway local' : 'Actualizar índice'}</button>}
+        {!searching && <button className="button button-secondary" onClick={() => void (mobileWebWithoutGateway ? navigate('settings') : nativePlatform && !catalogOnline ? retryNativeConnection() : startSync())} disabled={(!catalogOnline && !nativePlatform && (!vercelCatalog || mobileBrowser)) || syncState.phase === 'running' || connectionChecking}><Download size={16}/>{mobileWebWithoutGateway ? 'Configurar gateway móvil' : nativePlatform && !catalogOnline ? connectionChecking ? 'Comprobando…' : 'Probar conexión' : !catalogOnline && vercelCatalog ? 'Conectar gateway local' : 'Actualizar índice'}</button>}
       </div>
       {searching ? <>
         {currentSearchView?.pending ? <div className="result-count" role="status">Buscando en tu biblioteca…</div> : <>
@@ -779,7 +920,13 @@ function App() {
       {downloadMessage && <div className="download-message" role="status"><span>{downloadMessage}</span><button className="icon-button" aria-label="Cerrar aviso" onClick={() => setDownloadMessage('')}><X size={16}/></button></div>}
       <div className="settings-list">
         <section className="setting-row"><span className="setting-icon"><HardDriveDownload size={19}/></span><div><strong>Carpeta de descarga</strong><small id="destination-help">{nativePlatform ? nativeDestination?.supported ? `Destino Android: ${nativeDestination.destination}. ${typeof nativeDestination.freeBytes === 'number' ? `${formatBytes(nativeDestination.freeBytes)} libres en el volumen.` : nativeDestination.spaceError || 'Espacio no disponible.'} La selección de otra carpeta se habilitará más adelante.` : nativeDestination?.spaceError || 'Comprobando el destino de este dispositivo…' : vercelCatalog && !apiBase ? 'Predeterminada: Download. El navegador guarda allí los archivos; por seguridad, una web sin gateway no puede elegir una ruta física ni medir el espacio libre.' : 'Predeterminada: Descargas/Descargar UCLV. Puedes cambiar la ruta completa desde el gateway; las colas ya creadas conservan su destino.'}</small></div>{vercelCatalog && !apiBase ? <div className="setting-destination-control"><label className="visually-hidden" htmlFor="destination-path">Carpeta predeterminada</label><input id="destination-path" value="Download" readOnly aria-describedby="destination-help"/><span className="setting-value">Predeterminada</span></div> : <form className="setting-destination-control" onSubmit={(event) => void saveDestination(event)}><label className="visually-hidden" htmlFor="destination-path">Ruta de descarga predeterminada</label><input id="destination-path" aria-describedby="destination-help" value={destinationDraft} onChange={(event) => setDestinationDraft(event.target.value)} placeholder="Ruta completa de Descargas" disabled={nativePlatform || !gatewayOnline}/><button type="submit" className="button button-secondary" disabled={nativePlatform || !gatewayOnline || !destinationDraft.trim()}>Guardar</button></form>}</section>
-        <section className="setting-row"><span className="setting-icon"><Wifi size={19}/></span><div><strong>Conexión al catálogo</strong><small>{nativePlatform ? catalogOnline ? 'Conexión HTTPS directa desde Android. Descargas nativas aún pendientes.' : 'No se pudo conectar al catálogo; el índice guardado sigue disponible.' : vercelCatalog ? mobileBrowser ? 'El gateway del ordenador no es accesible como 127.0.0.1 desde el teléfono. Para sincronizar aquí hace falta un gateway accesible desde esta red.' : 'Vercel no alcanza el servidor UCLV. Inicia UCLV Media en este equipo y pulsa “Conectar y sincronizar”; permite el acceso local en Chrome.' : gatewayOnline ? apiBase ? 'Conectado al gateway de este equipo. Las consultas al origen salen por tu red local.' : 'Servicio local disponible. Las consultas al origen se hacen desde este dispositivo.' : 'Inicia el gateway local para consultar el catálogo.'}</small></div><span className={`service-status ${catalogOnline ? 'online' : ''}`}>{catalogOnline ? 'Conectado' : 'Desconectado'}</span></section>
+        <section className="setting-row"><span className="setting-icon"><Wifi size={19}/></span><div><strong>Conexión al catálogo</strong><small>{nativePlatform ? catalogOnline ? apiBase && gatewayAccessToken ? 'Catálogo conectado a través del gateway temporal del ordenador; las descargas se guardan en este Android.' : 'Conexión HTTPS directa desde Android.' : connectionError || 'No se pudo conectar al catálogo; el índice guardado sigue disponible.' : vercelCatalog ? mobileBrowser ? 'El gateway del ordenador no es accesible como 127.0.0.1 desde el teléfono. Para sincronizar aquí hace falta un gateway accesible desde esta red.' : 'Vercel no alcanza el servidor UCLV. Inicia UCLV Media en este equipo y pulsa “Conectar y sincronizar”; permite el acceso local en Chrome.' : gatewayOnline ? apiBase ? 'Conectado al gateway de este equipo. Las consultas al origen salen por tu red local.' : 'Servicio local disponible. Las consultas al origen se hacen desde este dispositivo.' : 'Inicia el gateway local para consultar el catálogo.'}</small></div>{nativePlatform && !catalogOnline && <button className="button button-secondary" onClick={() => void retryNativeConnection()} disabled={connectionChecking}>{connectionChecking ? 'Comprobando…' : 'Probar conexión'}</button>}<span className={`service-status ${catalogOnline ? 'online' : ''}`}>{catalogOnline ? 'Conectado' : 'Desconectado'}</span></section>
+        <section className="setting-row setting-row-column"><span className="setting-icon"><Wifi size={19}/></span><div><strong>Conectar desde el teléfono</strong><small>Ejecuta el gateway móvil y el túnel seguro en el ordenador; copia aquí la dirección HTTPS temporal y su clave. La conexión permite explorar, sincronizar y abrir vistas previas. El túnel funciona mientras ambos procesos sigan abiertos.</small></div><form className="remote-gateway-form" onSubmit={(event) => void connectRemoteGateway(event)}>
+          <label htmlFor="mobile-gateway-url">Dirección HTTPS del túnel</label><input id="mobile-gateway-url" type="url" inputMode="url" autoCapitalize="none" autoCorrect="off" placeholder="https://nombre.trycloudflare.com" value={gatewayUrlDraft} onChange={(event) => setGatewayUrlDraft(event.target.value)} />
+          <label htmlFor="mobile-gateway-token">Clave temporal</label><input id="mobile-gateway-token" type="password" autoComplete="off" value={gatewayTokenDraft} onChange={(event) => setGatewayTokenDraft(event.target.value)} />
+          {gatewayConnectionError && <span className="inline-error" role="alert">{gatewayConnectionError}</span>}
+          <div className="remote-gateway-actions"><button className="button button-primary" type="submit" disabled={gatewayConnecting || !gatewayUrlDraft.trim() || !gatewayTokenDraft.trim()}>{gatewayConnecting ? 'Conectando…' : 'Conectar y guardar'}</button>{gatewayAccessToken && <button className="button button-secondary" type="button" onClick={() => { localStorage.removeItem('uclv-mobile-gateway-url'); localStorage.removeItem('uclv-mobile-gateway-token'); setGatewayAccessToken(''); setGatewayUrlDraft(''); setGatewayTokenDraft(''); setApiBase(''); setGatewayOnline(false); setCatalogOnline(false); setVercelCatalog(true) }}>Desconectar</button>}</div>
+        </form></section>
         <section className="setting-row"><span className="setting-icon"><Clock3 size={19}/></span><div><strong>Reintentos</strong><small>Máximo 2 intentos automáticos por carpeta. Si falla, conserva el punto de continuación.</small></div><span className="setting-value">Rápido y limitado</span></section>
         <section className="setting-row"><span className="setting-icon"><Bookmark size={19}/></span><div><strong>Datos guardados</strong><small>{nodes.length.toLocaleString('es')} elementos · {favorites.size} favoritos · {lists.length} listas</small></div><span className="service-status online">En este dispositivo</span></section>
         <section className="setting-row"><span className="setting-icon"><HardDriveDownload size={19}/></span><div><strong>Protección del índice</strong><small>{browserStorage?.persistent === true
@@ -845,10 +992,21 @@ function App() {
       <section className="media-dialog" role="dialog" aria-modal="true" aria-labelledby="preview-title">
         <button className="preview-close icon-button" data-initial-focus aria-label="Cerrar vista previa" onClick={() => setPreviewNode(null)}><X size={20}/></button>
         <div className="media-title"><span><Eye size={17}/></span><div><h2 id="preview-title">{previewNode.name}</h2><small>{previewNode.relativePath}</small></div></div>
-        {/\.(jpe?g|png|gif|webp|avif|bmp|svg)$/i.test(previewNode.name)
-          ? <img className="media-image" src={nativePlatform ? sourceUrlForPath(previewNode.relativePath) : apiUrl(`/api/file?path=${encodeURIComponent(previewNode.relativePath)}`)} alt={previewNode.name} />
-          : <video className="media-video" controls preload="metadata" src={nativePlatform ? sourceUrlForPath(previewNode.relativePath) : apiUrl(`/api/file?path=${encodeURIComponent(previewNode.relativePath)}`)} aria-label={`Reproductor de ${previewNode.name}`} />}
-        <a className="text-button media-original" href={nativePlatform ? sourceUrlForPath(previewNode.relativePath) : apiUrl(`/api/file?path=${encodeURIComponent(previewNode.relativePath)}`)} target="_blank" rel="noreferrer">Abrir el archivo original</a>
+        {gatewayAccessToken && !nativePlatform && !previewTicket && <p role={previewTicketError ? 'alert' : 'status'}>{previewTicketError || 'Preparando vista previa…'}</p>}
+        {(!gatewayAccessToken || nativePlatform || previewTicket) && (() => {
+          const mediaUrl = nativePlatform
+            ? sourceUrlForPath(previewNode.relativePath)
+            : apiUrl(`/api/file?path=${encodeURIComponent(previewNode.relativePath)}${previewTicket ? `&ticket=${encodeURIComponent(previewTicket)}` : ''}`)
+          return <>
+            {/\.(jpe?g|png|gif|webp|avif|bmp|svg)$/i.test(previewNode.name)
+              ? <img className="media-image" src={mediaUrl} alt={previewNode.name} />
+              : <video className="media-video" controls preload="metadata" src={mediaUrl} aria-label={`Reproductor de ${previewNode.name}`} />}
+            <div className="media-actions">
+              <a className="button button-primary" href={`${mediaUrl}${mediaUrl.includes('?') ? '&' : '?'}download=1&name=${encodeURIComponent(previewNode.name)}`} download={previewNode.name}><Download size={16}/>Descargar archivo</a>
+              <a className="text-button media-original" href={mediaUrl} target="_blank" rel="noreferrer">Abrir el archivo original</a>
+            </div>
+          </>
+        })()}
       </section>
     </div>}
     {pendingDownloadPlan && <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setPendingDownloadPlan(null) }}>

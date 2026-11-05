@@ -7,6 +7,8 @@
     "dev": "concurrently -k \"npm:gateway\" \"npm:dev:ui\"",
     "dev:ui": "vite --host 127.0.0.1",
     "gateway": "node server/gateway.mjs",
+    "gateway:remote": "node server/remote-gateway.mjs",
+    "gateway:mobile": "concurrently -k \"npm:gateway\" \"npm:gateway:remote\"",
     "start": "node server/gateway.mjs",
     "build": "tsc -b && vite build",
     "android:add": "cap add android",

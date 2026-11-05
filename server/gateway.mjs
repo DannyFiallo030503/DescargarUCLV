@@ -90,8 +90,9 @@ function sourcePath(rawPath) {
     throw new Error('La ruta del origen no es válida.')
   }
   const parts = rawPath.split('/').filter(Boolean).map((part) => {
-    let decoded
-    try { decoded = decodeURIComponent(part) } catch { throw new Error('La ruta contiene codificación inválida.') }
+    // URLSearchParams has already decoded the query value once. Treat a literal
+    // percent in a file or folder name as data and encode it for the upstream URL.
+    const decoded = part
     if (!decoded || decoded === '.' || decoded === '..' || /[/\\\u0000-\u001f]/.test(decoded)) {
       throw new Error('La ruta contiene un segmento no permitido.')
     }

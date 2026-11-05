@@ -11,6 +11,19 @@ function findElements(node, tagName, output = []) {
   return output
 }
 
+function decodePathSegment(segment) {
+  try { return decodeURIComponent(segment) }
+  catch {
+    // Some autoindexes contain stray percent signs or non-UTF-8 filename bytes.
+    // Decode valid byte runs with replacement characters so one bad name cannot
+    // abort the entire directory listing; encoded separators are still rejected.
+    return segment.replace(/(?:%[\da-f]{2})+/gi, (run) => {
+      const bytes = run.match(/%[\da-f]{2}/gi).map((byte) => Number.parseInt(byte.slice(1), 16))
+      return new TextDecoder('utf-8', { fatal: false }).decode(Uint8Array.from(bytes))
+    })
+  }
+}
+
 function parseSize(label) {
   const match = label.trim().replaceAll(',', '').match(/^(\d+(?:\.\d+)?)\s*([KMGTP])?$/i)
   if (!match) return undefined
@@ -20,8 +33,7 @@ function parseSize(label) {
 
 function safeDecodedPath(url) {
   const segments = url.pathname.split('/').filter(Boolean).map((segment) => {
-    let decoded
-    try { decoded = decodeURIComponent(segment) } catch { throw new Error('El enlace contiene codificación inválida.') }
+    const decoded = decodePathSegment(segment)
     if (decoded === '.' || decoded === '..' || /[/\\\u0000-\u001f]/.test(decoded)) {
       throw new Error('El enlace contiene una ruta no permitida.')
     }
