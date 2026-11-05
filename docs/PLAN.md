@@ -121,6 +121,8 @@ Auditoría local y sondeo HTTP mínimo completados: ver `SOURCE_AUDIT.md`. Parse
 
 Para el PWA móvil se añadió conexión a un relay local autenticado, tickets temporales de vista previa y descarga directa desde el visor. La revisión se publicó en Vercel; Quick Tunnel `https://growing-normal-stating-misc.trycloudflare.com` enruta al relay en el puerto 4180. Smoke externo de `/api/health`, `/api/list?path=/` (20 entradas), preflight CORS y emisión de ticket pasó. El túnel solo vive mientras esta sesión mantenga el proceso; aún falta la comprobación desde Chrome físico. La cola del gateway usa el disco del ordenador puente; el APK descarga y reanuda en el teléfono. Quick Tunnels son solo para pruebas.
 
+**Acceso directo web (2026-11-05):** en Chrome, `fetch()` directo al índice UCLV se bloquea porque la respuesta no permite CORS; la función Vercel `/api/list` también falla por la redirección del origen a `oops.uclv.edu.cu`. Se cambió la vista previa estática de Vercel para que imágenes y videos apunten al archivo original UCLV. Chrome cargó metadatos de un MP4 desde el origen (864×480, duración 1464.96 s); aún faltan seek/reproducción larga y descarga directa. El catálogo, las colas reanudables y descargas por lotes requieren que UCLV habilite CORS o que el usuario conecte un puente. Ver D-020.
+
 ## Fase 4 — dominio, persistencia y migraciones
 
 **Tareas**

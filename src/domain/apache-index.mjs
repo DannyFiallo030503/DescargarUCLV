@@ -12,16 +12,9 @@ function findElements(node, tagName, output = []) {
 }
 
 function decodePathSegment(segment) {
-  try { return decodeURIComponent(segment) }
-  catch {
-    // Some autoindexes contain stray percent signs or non-UTF-8 filename bytes.
-    // Decode valid byte runs with replacement characters so one bad name cannot
-    // abort the entire directory listing; encoded separators are still rejected.
-    return segment.replace(/(?:%[\da-f]{2})+/gi, (run) => {
-      const bytes = run.match(/%[\da-f]{2}/gi).map((byte) => Number.parseInt(byte.slice(1), 16))
-      return new TextDecoder('utf-8', { fatal: false }).decode(Uint8Array.from(bytes))
-    })
-  }
+  // Keep one malformed UTF-8 name from aborting the listing: callers validate
+  // each entry independently and skip it when decodeURIComponent rejects it.
+  return decodeURIComponent(segment)
 }
 
 function parseSize(label) {

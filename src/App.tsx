@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import {
   Bookmark, Check, ChevronDown, ChevronRight, ChevronUp, CircleHelp, Clock3, Copy,
-  Download, Eye, FileDown, FileUp, FileVideo2, Folder, FolderOpen, HardDriveDownload, Heart, Home,
+  Download, ExternalLink, Eye, FileDown, FileUp, FileVideo2, Folder, FolderOpen, HardDriveDownload, Heart, Home,
   List as ListIcon, LoaderCircle, Menu, Pause, Pencil, Search,
   Settings, Sparkles, Wifi, WifiOff, X,
 } from 'lucide-react'
@@ -79,6 +79,7 @@ function App() {
   )
   const mobileWebWithoutGateway = vercelCatalog && mobileBrowser && !nativePlatform
   const mobileBrowserRemote = mobileBrowser && !nativePlatform && Boolean(gatewayAccessToken)
+  const directBrowserMedia = vercelCatalog && !gatewayOnline && !gatewayAccessToken && !nativePlatform
   const [browserStorage, setBrowserStorage] = useState<BrowserStorageInfo | null>(null)
   const [currentScreen, setCurrentScreen] = useState<Screen>('home')
   const [currentPath, setCurrentPath] = useState('/')
@@ -827,7 +828,7 @@ function App() {
       <span className="sync-icon">{running ? <LoaderCircle className="spin" size={20} /> : completed ? <Check size={20} /> : <Sparkles size={19} />}</span>
       <div className="sync-copy">
         <strong>{running ? 'Actualizando tu biblioteca' : completed ? 'Biblioteca sincronizada' : partial ? 'Biblioteca actualizada parcialmente' : paused ? 'Sincronización pausada' : exampleMode ? 'Preparamos una pequeña vista de ejemplo' : 'Tu biblioteca está lista'}</strong>
-        <span>{mobileWebWithoutGateway ? 'En el teléfono, 127.0.0.1 apunta al propio teléfono, no al ordenador. Esta web necesita un gateway accesible desde el móvil para sincronizar.' : running ? `${syncState.directoriesDone} carpetas revisadas · ${syncState.filesFound} archivos encontrados` : paused ? `${syncState.directoriesDone} carpetas guardadas. Puedes continuar cuando quieras.` : partial ? `${syncState.directoriesDone} carpetas revisadas · ${syncState.filesFound.toLocaleString('es')} archivos · ${syncState.deferredDirectories ?? 0} carpetas lentas por reintentar` : completed ? `${syncState.filesFound.toLocaleString('es')} archivos · índice local listo` : exampleMode ? 'La muestra es orientativa. La sincronización completa puede tardar y se puede pausar.' : 'Tus carpetas y archivos guardados se pueden consultar sin conexión.'}</span>
+        <span>{mobileWebWithoutGateway ? 'El navegador puede abrir UCLV, pero esta web no puede leer sus carpetas porque el servidor no autoriza CORS. Se puede ver vídeo directamente; para sincronizar el índice hace falta habilitar CORS o conectar un puente.' : running ? `${syncState.directoriesDone} carpetas revisadas · ${syncState.filesFound} archivos encontrados` : paused ? `${syncState.directoriesDone} carpetas guardadas. Puedes continuar cuando quieras.` : partial ? `${syncState.directoriesDone} carpetas revisadas · ${syncState.filesFound.toLocaleString('es')} archivos · ${syncState.deferredDirectories ?? 0} carpetas lentas por reintentar` : completed ? `${syncState.filesFound.toLocaleString('es')} archivos · índice local listo` : exampleMode ? 'La muestra es orientativa. La sincronización completa puede tardar y se puede pausar.' : 'Tus carpetas y archivos guardados se pueden consultar sin conexión.'}</span>
         {syncState.lastError && !mobileWebWithoutGateway && <span className="inline-error">{syncState.lastError}</span>}
       </div>
       {running
@@ -835,7 +836,7 @@ function App() {
         : catalogOnline || (vercelCatalog && !mobileBrowser)
           ? <button className="button button-primary" onClick={() => void startSync()}><Download size={16} />{!catalogOnline && vercelCatalog ? 'Conectar y sincronizar' : paused ? 'Continuar' : partial ? `Reintentar ${syncState.deferredDirectories ?? ''} carpetas` : completed ? 'Actualizar índice' : 'Sincronizar índice'}</button>
           : mobileWebWithoutGateway
-            ? <button className="button button-primary" onClick={() => navigate('settings')}>Conectar gateway móvil</button>
+            ? <button className="button button-primary" onClick={() => navigate('settings')}>Ver opciones para sincronizar</button>
           : nativePlatform
             ? <button className="button button-secondary" onClick={() => void retryNativeConnection()} disabled={connectionChecking}><Wifi size={16}/>{connectionChecking ? 'Comprobando…' : 'Probar conexión'}</button>
           : <span className="sync-offline"><WifiOff size={15} />Catálogo sin conexión</span>}
@@ -947,8 +948,8 @@ function App() {
       {downloadMessage && <div className="download-message" role="status"><span>{downloadMessage}</span><button className="icon-button" aria-label="Cerrar aviso" onClick={() => setDownloadMessage('')}><X size={16}/></button></div>}
       <div className="settings-list">
         <section className="setting-row"><span className="setting-icon"><HardDriveDownload size={19}/></span><div><strong>Carpeta de descarga</strong><small id="destination-help">{nativePlatform ? nativeDestination?.supported ? `Destino Android: ${nativeDestination.destination}. ${typeof nativeDestination.freeBytes === 'number' ? `${formatBytes(nativeDestination.freeBytes)} libres en el volumen.` : nativeDestination.spaceError || 'Espacio no disponible.'} La selección de otra carpeta se habilitará más adelante.` : nativeDestination?.spaceError || 'Comprobando el destino de este dispositivo…' : vercelCatalog && !apiBase ? 'Predeterminada: Download. El navegador guarda allí los archivos; por seguridad, una web sin gateway no puede elegir una ruta física ni medir el espacio libre.' : 'Predeterminada: Descargas/Descargar UCLV. Puedes cambiar la ruta completa desde el gateway; las colas ya creadas conservan su destino.'}</small></div>{vercelCatalog && !apiBase ? <div className="setting-destination-control"><label className="visually-hidden" htmlFor="destination-path">Carpeta predeterminada</label><input id="destination-path" value="Download" readOnly aria-describedby="destination-help"/><span className="setting-value">Predeterminada</span></div> : <form className="setting-destination-control" onSubmit={(event) => void saveDestination(event)}><label className="visually-hidden" htmlFor="destination-path">Ruta de descarga predeterminada</label><input id="destination-path" aria-describedby="destination-help" value={destinationDraft} onChange={(event) => setDestinationDraft(event.target.value)} placeholder="Ruta completa de Descargas" disabled={nativePlatform || !gatewayOnline}/><button type="submit" className="button button-secondary" disabled={nativePlatform || !gatewayOnline || !destinationDraft.trim()}>Guardar</button></form>}</section>
-        <section className="setting-row"><span className="setting-icon"><Wifi size={19}/></span><div><strong>Conexión al catálogo</strong><small>{nativePlatform ? catalogOnline ? apiBase && gatewayAccessToken ? 'Catálogo conectado a través del gateway temporal del ordenador; las descargas se guardan en este Android.' : 'Conexión HTTPS directa desde Android.' : connectionError || 'No se pudo conectar al catálogo; el índice guardado sigue disponible.' : vercelCatalog ? mobileBrowser ? 'El gateway del ordenador no es accesible como 127.0.0.1 desde el teléfono. Para sincronizar aquí hace falta un gateway accesible desde esta red.' : 'Vercel no alcanza el servidor UCLV. Inicia UCLV Media en este equipo y pulsa “Conectar y sincronizar”; permite el acceso local en Chrome.' : gatewayOnline ? apiBase ? 'Conectado al gateway de este equipo. Las consultas al origen salen por tu red local.' : 'Servicio local disponible. Las consultas al origen se hacen desde este dispositivo.' : 'Inicia el gateway local para consultar el catálogo.'}</small></div>{nativePlatform && !catalogOnline && <button className="button button-secondary" onClick={() => void retryNativeConnection()} disabled={connectionChecking}>{connectionChecking ? 'Comprobando…' : 'Probar conexión'}</button>}<span className={`service-status ${catalogOnline ? 'online' : ''}`}>{catalogOnline ? 'Conectado' : 'Desconectado'}</span></section>
-        <section className="setting-row setting-row-column"><span className="setting-icon"><Wifi size={19}/></span><div><strong>Conectar desde el teléfono</strong><small>Ejecuta el gateway móvil y el túnel seguro en el ordenador; copia aquí la dirección HTTPS temporal y su clave. La conexión permite explorar, sincronizar y abrir vistas previas. El túnel funciona mientras ambos procesos sigan abiertos.</small></div><form className="remote-gateway-form" onSubmit={(event) => void connectRemoteGateway(event)}>
+        <section className="setting-row"><span className="setting-icon"><Wifi size={19}/></span><div><strong>Conexión al catálogo</strong><small>{nativePlatform ? catalogOnline ? apiBase && gatewayAccessToken ? 'Catálogo conectado a través del gateway temporal del ordenador; las descargas se guardan en este Android.' : 'Conexión HTTPS directa desde Android.' : connectionError || 'No se pudo conectar al catálogo; el índice guardado sigue disponible.' : vercelCatalog ? 'Vercel no recibe el autoíndice de UCLV desde sus servidores. El navegador puede abrirlo directamente, pero el origen no autoriza que la web lea sus carpetas (CORS). El gateway es un puente opcional para sincronizar mientras UCLV no habilite CORS.' : gatewayOnline ? apiBase ? 'Conectado al gateway de este equipo. Las consultas al origen salen por tu red local.' : 'Servicio local disponible. Las consultas al origen se hacen desde este dispositivo.' : 'Inicia el gateway local para consultar el catálogo.'}</small></div>{nativePlatform && !catalogOnline && <button className="button button-secondary" onClick={() => void retryNativeConnection()} disabled={connectionChecking}>{connectionChecking ? 'Comprobando…' : 'Probar conexión'}</button>}<span className={`service-status ${catalogOnline ? 'online' : ''}`}>{catalogOnline ? 'Conectado' : 'Desconectado'}</span></section>
+        <section className="setting-row setting-row-column"><span className="setting-icon"><Wifi size={19}/></span><div><strong>Puente para sincronizar desde el teléfono</strong><small>Las imágenes y los vídeos pueden abrirse directamente desde UCLV. Para leer carpetas y preparar listas, el navegador necesita que UCLV autorice CORS. Mientras eso no ocurra, ejecuta el gateway móvil y el túnel en un ordenador con acceso, y pega aquí su dirección y clave.</small></div><form className="remote-gateway-form" onSubmit={(event) => void connectRemoteGateway(event)}>
           <label htmlFor="mobile-gateway-url">Dirección HTTPS del túnel</label><input id="mobile-gateway-url" type="url" inputMode="url" autoCapitalize="none" autoCorrect="off" placeholder="https://nombre.trycloudflare.com" value={gatewayUrlDraft} onChange={(event) => setGatewayUrlDraft(event.target.value)} />
           <label htmlFor="mobile-gateway-token">Clave temporal</label><input id="mobile-gateway-token" type="password" autoComplete="off" value={gatewayTokenDraft} onChange={(event) => setGatewayTokenDraft(event.target.value)} />
           {gatewayConnectionError && <span className="inline-error" role="alert">{gatewayConnectionError}</span>}
@@ -1021,7 +1022,7 @@ function App() {
         <div className="media-title"><span><Eye size={17}/></span><div><h2 id="preview-title">{previewNode.name}</h2><small>{previewNode.relativePath}</small></div></div>
         {gatewayAccessToken && !nativePlatform && !previewTicket && <p role={previewTicketError ? 'alert' : 'status'}>{previewTicketError || 'Preparando vista previa…'}</p>}
         {(!gatewayAccessToken || nativePlatform || previewTicket) && (() => {
-          const mediaUrl = nativePlatform
+          const mediaUrl = nativePlatform || directBrowserMedia
             ? sourceUrlForPath(previewNode.relativePath)
             : apiUrl(`/api/file?path=${encodeURIComponent(previewNode.relativePath)}${previewTicket ? `&ticket=${encodeURIComponent(previewTicket)}` : ''}`)
           return <>
@@ -1029,9 +1030,12 @@ function App() {
               ? <img className="media-image" src={mediaUrl} alt={previewNode.name} />
               : <video className="media-video" controls preload="metadata" src={mediaUrl} aria-label={`Reproductor de ${previewNode.name}`} />}
             <div className="media-actions">
-              <a className="button button-primary" href={`${mediaUrl}${mediaUrl.includes('?') ? '&' : '?'}download=1&name=${encodeURIComponent(previewNode.name)}`} download={previewNode.name}><Download size={16}/>Descargar archivo</a>
-              <a className="text-button media-original" href={mediaUrl} target="_blank" rel="noreferrer">Abrir el archivo original</a>
+              {directBrowserMedia
+                ? <a className="button button-primary" href={mediaUrl} target="_blank" rel="noreferrer"><ExternalLink size={16}/>Abrir archivo desde UCLV</a>
+                : <a className="button button-primary" href={`${mediaUrl}${mediaUrl.includes('?') ? '&' : '?'}download=1&name=${encodeURIComponent(previewNode.name)}`} download={previewNode.name}><Download size={16}/>Descargar archivo</a>}
+              {!directBrowserMedia && <a className="text-button media-original" href={mediaUrl} target="_blank" rel="noreferrer">Abrir el archivo original</a>}
             </div>
+            {directBrowserMedia && <p className="media-direct-note">La vista previa se reproduce directamente desde UCLV. Chrome administra la apertura o descarga del archivo.</p>}
           </>
         })()}
       </section>

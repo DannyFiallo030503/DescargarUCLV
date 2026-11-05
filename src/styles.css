@@ -250,6 +250,7 @@ h1 { margin-bottom: 12px; font: 800 clamp(28px, 3.3vw, 42px)/1.16 Manrope, sans-
 .media-image, .media-video { display: block; width: 100%; max-height: calc(92vh - 140px); min-height: 100px; flex: 1; border-radius: 10px; background: #090b0a; object-fit: contain; }
 .media-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .media-original { align-self: flex-start; color: #c9e6d1; }
+.media-direct-note { margin: -4px 0 0; color: #b7c2b9; font-size: 12px; line-height: 1.5; }
 .download-message { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 14px; border: 1px solid #ecd9aa; border-radius: 12px; background: #fff9e9; padding: 11px 13px; color: #705316; font-size: 12px; line-height: 1.5; }
 .download-jobs { display: grid; gap: 12px; }
 .download-job { border: 1px solid var(--line); border-radius: 15px; background: #fff; padding: 16px; }
