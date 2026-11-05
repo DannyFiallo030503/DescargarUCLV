@@ -78,6 +78,7 @@ function App() {
     || (/Macintosh/i.test(navigator.userAgent) && navigator.maxTouchPoints > 1)
   )
   const mobileWebWithoutGateway = vercelCatalog && mobileBrowser && !nativePlatform
+  const mobileBrowserRemote = mobileBrowser && !nativePlatform && Boolean(gatewayAccessToken)
   const [browserStorage, setBrowserStorage] = useState<BrowserStorageInfo | null>(null)
   const [currentScreen, setCurrentScreen] = useState<Screen>('home')
   const [currentPath, setCurrentPath] = useState('/')
@@ -324,17 +325,17 @@ function App() {
   const selection = useMemo(() => summarizeSelection(nodes, selectedIds), [nodes, selectedIds])
   const selectionMarks = useMemo(() => buildSelectionMarks(nodes, selectedIds), [nodes, selectedIds])
   const favoriteNodes = [...favorites].map((id) => nodeById.get(id) ?? favoriteSnapshots.get(id)).filter((node): node is CatalogNode => Boolean(node))
-  const queuedPaths = new Set(downloadSnapshot.jobs.filter((job) => job.destination === downloadSnapshot.destination).flatMap((job) => job.items.map((item) => item.path)))
+  const queuedPaths = new Set(mobileBrowserRemote ? [] : downloadSnapshot.jobs.filter((job) => job.destination === downloadSnapshot.destination).flatMap((job) => job.items.map((item) => item.path)))
   const pendingNodes = pendingDownloadPlan?.ids.map((id) => nodeById.get(id)).filter((node): node is CatalogNode => node?.kind === 'file') ?? []
   const pendingDuplicates = pendingNodes.filter((node) => queuedPaths.has(node.relativePath)).length
   const newPendingNodes = pendingNodes.filter((node) => !queuedPaths.has(node.relativePath))
   const pendingSummary = summarizeSelection(nodes, new Set(newPendingNodes.map((node) => node.id)))
   const missingPendingCount = pendingDownloadPlan ? pendingDownloadPlan.ids.length - pendingNodes.length : 0
-  const destinationReady = gatewayOnline || (nativePlatform && nativeDestination?.supported === true && typeof nativeDestination.freeBytes === 'number')
+  const destinationReady = mobileBrowserRemote || gatewayOnline || (nativePlatform && nativeDestination?.supported === true && typeof nativeDestination.freeBytes === 'number')
   const pendingRequiredBytes = nativePlatform
     ? pendingSummary.knownBytes * 2 + (pendingSummary.knownBytes > 0 ? 64 * 1024 ** 2 : 0)
     : pendingSummary.knownBytes
-  const pendingFits = destinationReady && pendingRequiredBytes <= downloadSnapshot.freeBytes
+  const pendingFits = mobileBrowserRemote || (destinationReady && pendingRequiredBytes <= downloadSnapshot.freeBytes)
 
   function navigate(screen: Screen) {
     setCurrentScreen(screen)
@@ -609,11 +610,36 @@ function App() {
     }
     const summary = summarizeSelection(nodes, new Set(selectedFiles.map((item) => item.id)))
     const requiredBytes = nativePlatform ? summary.knownBytes * 2 + (summary.knownBytes ? 64 * 1024 ** 2 : 0) : summary.knownBytes
-    if (requiredBytes > downloadSnapshot.freeBytes) {
+    if (!mobileBrowserRemote && requiredBytes > downloadSnapshot.freeBytes) {
       setDownloadMessage(`No hay espacio suficiente en ${downloadSnapshot.destination || 'Descargas'}. La selección necesita aproximadamente ${formatBytes(requiredBytes)} incluyendo temporales y hay ${formatBytes(downloadSnapshot.freeBytes)} libres.`)
       return
     }
     try {
+      if (mobileBrowserRemote) {
+        let started = 0
+        for (const item of items) {
+          const response = await apiFetch('/api/mobile-ticket', {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ path: item.path }),
+          })
+          const ticket = await response.json().catch(() => ({})) as { ticket?: string; error?: string }
+          if (!response.ok || !ticket.ticket) throw new Error(ticket.error || `No se pudo preparar ${item.name}.`)
+          const link = document.createElement('a')
+          link.href = `${apiUrl(`/api/file?path=${encodeURIComponent(item.path)}&ticket=${encodeURIComponent(ticket.ticket)}`)}&download=1&name=${encodeURIComponent(item.name)}`
+          link.download = item.name
+          link.rel = 'noreferrer'
+          document.body.append(link)
+          link.click()
+          link.remove()
+          started += 1
+          await new Promise((resolve) => window.setTimeout(resolve, 350))
+        }
+        setDownloadMessage(`${started} archivos enviados a Descargas de Chrome. Si Chrome pregunta, permite las descargas múltiples. El navegador mostrará el avance.`)
+        if (clearSelection) setSelectedIds(new Set())
+        setPendingDownloadPlan(null)
+        setCurrentScreen('downloads')
+        return
+      }
       if (nativePlatform) {
         const result = await androidDownloads.enqueue({ items })
         setDownloadSnapshot(result as DownloadSnapshot)
@@ -895,6 +921,7 @@ function App() {
 
   function renderDownloads() {
     const labels: Record<string, string> = { queued: 'En cola', downloading: 'Descargando', paused: 'Pausada', completed: 'Completada', error: 'Requiere atención' }
+    if (mobileBrowserRemote) return <><div className="page-title-row"><div><p className="eyebrow">Descargas del teléfono</p><h1>Descargas</h1><p className="page-subtitle">Los archivos se guardan en la carpeta Descargas de Chrome en este dispositivo.</p></div><button className="button button-secondary" onClick={() => navigate('explore')}>Explorar</button></div><section className="download-info"><span className="download-info-icon"><HardDriveDownload size={23}/></span><div><strong>Destino: Descargas de Chrome</strong><p>Chrome administra el espacio, el avance y las pausas. Para colas persistentes que continúen después de cerrar la aplicación, usa la APK.</p></div><CircleHelp size={19}/></section>{downloadMessage && <div className="download-message" role="status"><span>{downloadMessage}</span><button className="icon-button" aria-label="Cerrar aviso" onClick={() => setDownloadMessage('')}><X size={16}/></button></div>}<div className="empty-card"><Download size={24}/><strong>Revisa el avance en Chrome</strong><span>Abre el menú de Chrome y entra en Descargas para ver o reanudar los archivos que ya empezaron.</span></div></>
     if (!gatewayOnline && !nativeDestination?.supported) return <><div className="page-title-row"><div><p className="eyebrow">Transferencias guardadas</p><h1>Descargas</h1><p className="page-subtitle">{nativePlatform ? 'Este Android no tiene disponible el destino seguro de descargas.' : 'Conecta el servicio local para consultar tus transferencias.'}</p></div></div>{nativePlatform && <section className="download-info"><span className="download-info-icon"><HardDriveDownload size={23}/></span><div><strong>Destino predeterminado: {downloadSnapshot.destination || 'Comprobando…'}</strong><p>{nativeDestination?.spaceError || 'El destino y el espacio todavía no están disponibles.'}</p></div><CircleHelp size={19}/></section>}<div className="empty-card"><HardDriveDownload size={24}/><strong>{nativePlatform ? 'Destino Android no compatible' : 'Inicia el servicio local'}</strong><span>{nativePlatform ? 'Puedes seguir explorando y guardar favoritos y listas. No se habilitan transferencias si Android no puede proteger el destino.' : 'Abre la aplicación con el servicio local para consultar tus transferencias guardadas.'}</span></div></>
     return <><div className="page-title-row"><div><p className="eyebrow">Transferencias guardadas</p><h1>Descargas</h1><p className="page-subtitle">La cola y los archivos parciales se guardan en este dispositivo.</p></div><button className="button button-secondary" onClick={() => void refreshDownloads()}><Clock3 size={16}/>Actualizar</button></div>
       <section className="download-info"><span className="download-info-icon"><HardDriveDownload size={23}/></span><div><strong>Destino predeterminado para nuevas descargas: {downloadSnapshot.destination || 'Cargando carpeta…'}</strong><p>{destinationReady ? `${formatBytes(downloadSnapshot.freeBytes)} disponibles · ` : ''}{gatewayOnline ? 'Cada trabajo conserva su propio destino.' : nativePlatform ? 'Las descargas de Android se guardan y se pueden reanudar desde esta lista.' : 'Conecta el servicio local para habilitar las transferencias.'}</p></div><CircleHelp size={19}/></section>
@@ -1014,14 +1041,14 @@ function App() {
         <button className="dialog-close icon-button" data-initial-focus aria-label="Cerrar revisión" onClick={() => setPendingDownloadPlan(null)}><X size={19}/></button>
         <span className="dialog-icon"><HardDriveDownload size={22}/></span><p className="eyebrow">Antes de empezar</p><h2 id="download-plan-title">Revisa la descarga</h2>
         <p>Se preparan {pendingSummary.fileCount} {pendingSummary.fileCount === 1 ? 'archivo' : 'archivos'} para esta cola. Puedes pausarla y volver más tarde.</p>
-        <div className="plan-summary-grid"><div><small>Tamaño conocido</small><strong>{formatBytes(pendingSummary.knownBytes)}</strong></div><div><small>Espacio disponible</small><strong>{destinationReady ? formatBytes(downloadSnapshot.freeBytes) : 'Aún no disponible'}</strong></div></div>
-        <div className="plan-destination"><HardDriveDownload size={16}/><span><strong>Se guardarán en</strong><small>{destinationReady ? downloadSnapshot.destination || 'Destino no disponible' : 'Destino aún no disponible'}</small></span></div>
-        {pendingSummary.unknownSizeCount > 0 && <p className="plan-warning" role="status">{pendingSummary.unknownSizeCount} archivos no tienen tamaño conocido. El motor volverá a comprobar el espacio mientras descarga.</p>}
+        <div className="plan-summary-grid"><div><small>Tamaño conocido</small><strong>{formatBytes(pendingSummary.knownBytes)}</strong></div><div><small>Espacio disponible</small><strong>{mobileBrowserRemote ? 'Chrome lo comprobará' : destinationReady ? formatBytes(downloadSnapshot.freeBytes) : 'Aún no disponible'}</strong></div></div>
+        <div className="plan-destination"><HardDriveDownload size={16}/><span><strong>Se guardarán en</strong><small>{mobileBrowserRemote ? 'Descargas de Chrome en este teléfono' : destinationReady ? downloadSnapshot.destination || 'Destino no disponible' : 'Destino aún no disponible'}</small></span></div>
+        {pendingSummary.unknownSizeCount > 0 && <p className="plan-warning" role="status">{pendingSummary.unknownSizeCount} archivos no tienen tamaño conocido. {mobileBrowserRemote ? 'Chrome comprobará el espacio disponible al iniciar.' : 'El motor volverá a comprobar el espacio mientras descarga.'}</p>}
         {pendingDuplicates > 0 && <p className="plan-note">Se omitirán {pendingDuplicates} elementos que ya están en esta cola/destino.</p>}
         {missingPendingCount > 0 && <p className="plan-warning">{missingPendingCount} elementos ya no aparecen en el índice guardado y no se añadirán.</p>}
         {destinationReady && !pendingFits && <p className="plan-error" role="alert">{nativePlatform ? 'No cabe la selección y su archivo temporal en el espacio disponible. Elige menos archivos o libera espacio.' : 'El tamaño conocido supera el espacio libre. Elige otra carpeta o selecciona menos archivos.'}</p>}
-        {pendingNodes.length > 0 && <p className="gateway-requirement">{gatewayOnline ? 'El servicio local guarda el avance y permite reanudar la cola.' : nativePlatform ? nativeDestination?.supported ? 'Android descargará con una notificación. Se reserva espacio para los temporales y los archivos finales.' : 'Android no informa un destino compatible con MediaStore. La selección se conserva en tus listas.' : 'Conecta el servicio local para consultar el destino y añadir elementos a la cola.'}</p>}
-        <div className="dialog-actions"><button type="button" className="button button-secondary" onClick={() => setPendingDownloadPlan(null)}>Volver</button><button type="button" className="button button-primary" disabled={!newPendingNodes.length || !pendingFits || (!gatewayOnline && !(nativePlatform && nativeDestination?.supported))} onClick={() => void confirmDownloadPlan()}><Download size={16}/>Añadir a la cola</button></div>
+        {pendingNodes.length > 0 && <p className="gateway-requirement">{mobileBrowserRemote ? 'Los archivos se enviarán al gestor de descargas de Chrome; puedes revisar su avance allí.' : gatewayOnline ? 'El servicio local guarda el avance y permite reanudar la cola.' : nativePlatform ? nativeDestination?.supported ? 'Android descargará con una notificación. Se reserva espacio para los temporales y los archivos finales.' : 'Android no informa un destino compatible con MediaStore. La selección se conserva en tus listas.' : 'Conecta el servicio local para consultar el destino y añadir elementos a la cola.'}</p>}
+        <div className="dialog-actions"><button type="button" className="button button-secondary" onClick={() => setPendingDownloadPlan(null)}>Volver</button><button type="button" className="button button-primary" disabled={!newPendingNodes.length || !pendingFits || (!gatewayOnline && !(nativePlatform && nativeDestination?.supported))} onClick={() => void confirmDownloadPlan()}><Download size={16}/>{mobileBrowserRemote ? 'Enviar a Descargas' : 'Añadir a la cola'}</button></div>
       </section>
     </div>}
   </div>
