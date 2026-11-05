@@ -90,11 +90,9 @@ describe('gateway HTTP black-box contract', () => {
       headers: {
         origin: 'https://uclv-media.vercel.app',
         'access-control-request-method': 'GET',
-        'access-control-request-private-network': 'true',
       },
     })
     expect(preflight.status).toBe(204)
-    expect(preflight.headers['access-control-allow-private-network']).toBe('true')
     expect(preflight.headers['access-control-allow-methods']).toContain('GET')
   })
 

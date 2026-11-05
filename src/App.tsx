@@ -193,30 +193,17 @@ function App() {
         } else {
           const health = await fetch('/api/health', { cache: 'no-store' })
           const healthInfo = health.ok ? await health.json().catch(() => ({})) as { ok?: boolean; downloadsAvailable?: boolean; catalogAvailable?: boolean; vercelMode?: boolean } : {}
-          let serviceBase = ''
-          let serviceInfo = healthInfo
-          let serviceHealthy = health.ok && healthInfo.catalogAvailable !== false
-          if (healthInfo.vercelMode === true && !serviceHealthy) {
-            const localBase = 'http://127.0.0.1:4179'
-            try {
-              const localHealth = await fetch(`${localBase}/api/health`, { cache: 'no-store', signal: AbortSignal.timeout(2_000) })
-              if (localHealth.ok) {
-                serviceBase = localBase
-                serviceInfo = await localHealth.json().catch(() => ({}))
-                serviceHealthy = serviceInfo.ok !== false
-              }
-            } catch { /* The local companion is optional; Vercel remains read-only/offline. */ }
-          }
-          const hasLocalDownloads = serviceHealthy && serviceInfo.downloadsAvailable !== false
+          const serviceHealthy = health.ok && healthInfo.catalogAvailable !== false
+          const hasLocalDownloads = serviceHealthy && healthInfo.downloadsAvailable !== false
           if (active) {
-            setApiBase(serviceBase)
+            setApiBase('')
             setGatewayOnline(hasLocalDownloads)
             setCatalogOnline(serviceHealthy)
-            setVercelCatalog(healthInfo.vercelMode === true && !serviceBase)
-            if (healthInfo.vercelMode === true && !serviceBase) setDownloadSnapshot((current) => ({ ...current, destination: 'Download' }))
+            setVercelCatalog(healthInfo.vercelMode === true && !serviceHealthy)
+            if (healthInfo.vercelMode === true && !serviceHealthy) setDownloadSnapshot((current) => ({ ...current, destination: 'Download' }))
           }
           if (hasLocalDownloads && active) {
-            const downloads = await fetch(`${serviceBase}/api/downloads`, { cache: 'no-store' })
+            const downloads = await fetch('/api/downloads', { cache: 'no-store' })
             if (downloads.ok) setDownloadSnapshot(await downloads.json() as DownloadSnapshot)
           }
         }
@@ -298,13 +285,40 @@ function App() {
     if (value.trim()) setCurrentPath('/')
   }
 
+  async function connectLocalGatewayFromClick(): Promise<string | null> {
+    const localBase = 'http://127.0.0.1:4179'
+    try {
+      const health = await fetch(`${localBase}/api/health`, { cache: 'no-store', signal: AbortSignal.timeout(30_000) })
+      if (!health.ok || (await health.json().catch(() => ({})) as { ok?: boolean }).ok === false) {
+        throw new Error('El gateway local no respondió correctamente.')
+      }
+      setApiBase(localBase)
+      setGatewayOnline(true)
+      setCatalogOnline(true)
+      setVercelCatalog(false)
+      const downloads = await fetch(`${localBase}/api/downloads`, { cache: 'no-store' })
+      if (downloads.ok) setDownloadSnapshot(await downloads.json() as DownloadSnapshot)
+      return localBase
+    } catch {
+      const message = 'Chrome no pudo conectar con el gateway local. Comprueba que esté abierto y permite el acceso a la red local para UCLV Media en los permisos del sitio.'
+      setSyncState((current) => ({ ...current, phase: 'error', lastError: message }))
+      return null
+    }
+  }
+
   async function startSync() {
-    if (!catalogOnline || syncState.phase === 'running') return
+    if (syncState.phase === 'running') return
+    let selectedApiBase = apiBase
+    if (!catalogOnline && vercelCatalog) {
+      const connected = await connectLocalGatewayFromClick()
+      if (!connected) return
+      selectedApiBase = connected
+    } else if (!catalogOnline) return
     // Request storage protection directly from the user's Sync click before awaiting network work.
     const storageRequest = requestPersistentStorage()
     setBrowserStorage(await storageRequest)
     syncService.current ??= new CatalogSyncService(
-      nativePlatform ? nativeCatalog.current! : new LocalGatewayCatalogAdapter(apiBase),
+      nativePlatform ? nativeCatalog.current! : new LocalGatewayCatalogAdapter(selectedApiBase),
       (entries) => searchWorker.current?.update(entries),
     )
     const result = await syncService.current.run((state) => {
@@ -651,8 +665,8 @@ function App() {
       </div>
       {running
         ? <button className="button button-secondary" onClick={pauseSync}><Pause size={16} />Pausar</button>
-        : catalogOnline
-          ? <button className="button button-primary" onClick={() => void startSync()}><Download size={16} />{paused ? 'Continuar' : partial ? `Reintentar ${syncState.deferredDirectories ?? ''} carpetas` : completed ? 'Actualizar índice' : 'Sincronizar índice'}</button>
+        : catalogOnline || vercelCatalog
+          ? <button className="button button-primary" onClick={() => void startSync()}><Download size={16} />{!catalogOnline && vercelCatalog ? 'Conectar y sincronizar' : paused ? 'Continuar' : partial ? `Reintentar ${syncState.deferredDirectories ?? ''} carpetas` : completed ? 'Actualizar índice' : 'Sincronizar índice'}</button>
           : <span className="sync-offline"><WifiOff size={15} />Catálogo sin conexión</span>}
     </section>
   }
@@ -688,7 +702,7 @@ function App() {
         {crumbs.map((crumb) => <span key={crumb.id} className="breadcrumb-part"><ChevronRight size={14}/><button onClick={() => setCurrentPath(crumb.id)}>{crumb.name}</button></span>)}
       </div>
       <div className="page-title-row"><div><p className="eyebrow">{searching ? 'Búsqueda en el dispositivo' : 'Explorar carpetas'}</p><h1>{searching ? 'Resultados' : currentNode?.name ?? 'Biblioteca'}</h1><p className="page-subtitle">{searching ? `Coincidencias para “${query}” en el índice guardado.` : 'Navega por el contenido y selecciona solo lo que quieres guardar.'}</p></div>
-        {!searching && <button className="button button-secondary" onClick={() => void startSync()} disabled={!catalogOnline || syncState.phase === 'running'}><Download size={16}/>Actualizar índice</button>}
+        {!searching && <button className="button button-secondary" onClick={() => void startSync()} disabled={(!catalogOnline && !vercelCatalog) || syncState.phase === 'running'}><Download size={16}/>{!catalogOnline && vercelCatalog ? 'Conectar gateway local' : 'Actualizar índice'}</button>}
       </div>
       {searching ? <>
         {currentSearchView?.pending ? <div className="result-count" role="status">Buscando en tu biblioteca…</div> : <>
@@ -760,7 +774,7 @@ function App() {
       {downloadMessage && <div className="download-message" role="status"><span>{downloadMessage}</span><button className="icon-button" aria-label="Cerrar aviso" onClick={() => setDownloadMessage('')}><X size={16}/></button></div>}
       <div className="settings-list">
         <section className="setting-row"><span className="setting-icon"><HardDriveDownload size={19}/></span><div><strong>Carpeta de descarga</strong><small id="destination-help">{nativePlatform ? nativeDestination?.supported ? `Destino Android: ${nativeDestination.destination}. ${typeof nativeDestination.freeBytes === 'number' ? `${formatBytes(nativeDestination.freeBytes)} libres en el volumen.` : nativeDestination.spaceError || 'Espacio no disponible.'} La selección de otra carpeta se habilitará más adelante.` : nativeDestination?.spaceError || 'Comprobando el destino de este dispositivo…' : vercelCatalog ? 'Predeterminada: Download. El navegador guarda allí los archivos; por seguridad, una web no puede elegir una ruta física ni administrar espacio o reanudar transferencias.' : 'Escribe la ruta completa de una carpeta. Las colas ya creadas conservan su destino y sus archivos parciales.'}</small></div>{vercelCatalog ? <div className="setting-destination-control"><label className="visually-hidden" htmlFor="destination-path">Carpeta predeterminada</label><input id="destination-path" value="Download" readOnly aria-describedby="destination-help"/><span className="setting-value">Predeterminada</span></div> : <form className="setting-destination-control" onSubmit={(event) => void saveDestination(event)}><label className="visually-hidden" htmlFor="destination-path">Ruta de descarga predeterminada</label><input id="destination-path" aria-describedby="destination-help" value={destinationDraft} onChange={(event) => setDestinationDraft(event.target.value)} placeholder="Ruta completa de Descargas" disabled={nativePlatform || !gatewayOnline}/><button type="submit" className="button button-secondary" disabled={nativePlatform || !gatewayOnline || !destinationDraft.trim()}>Guardar</button></form>}</section>
-        <section className="setting-row"><span className="setting-icon"><Wifi size={19}/></span><div><strong>Conexión al catálogo</strong><small>{nativePlatform ? catalogOnline ? 'Conexión HTTPS directa desde Android. Descargas nativas aún pendientes.' : 'No se pudo conectar al catálogo; el índice guardado sigue disponible.' : vercelCatalog ? 'Vercel no alcanza el servidor UCLV. Inicia UCLV Media en este equipo y permite el acceso local en Chrome para sincronizar.' : gatewayOnline ? apiBase ? 'Conectado al gateway de este equipo. Las consultas al origen salen por tu red local.' : 'Servicio local disponible. Las consultas al origen se hacen desde este dispositivo.' : 'Inicia el gateway local para consultar el catálogo.'}</small></div><span className={`service-status ${catalogOnline ? 'online' : ''}`}>{catalogOnline ? 'Conectado' : 'Desconectado'}</span></section>
+        <section className="setting-row"><span className="setting-icon"><Wifi size={19}/></span><div><strong>Conexión al catálogo</strong><small>{nativePlatform ? catalogOnline ? 'Conexión HTTPS directa desde Android. Descargas nativas aún pendientes.' : 'No se pudo conectar al catálogo; el índice guardado sigue disponible.' : vercelCatalog ? 'Vercel no alcanza el servidor UCLV. Inicia UCLV Media en este equipo y pulsa “Conectar y sincronizar”; permite el acceso local en Chrome.' : gatewayOnline ? apiBase ? 'Conectado al gateway de este equipo. Las consultas al origen salen por tu red local.' : 'Servicio local disponible. Las consultas al origen se hacen desde este dispositivo.' : 'Inicia el gateway local para consultar el catálogo.'}</small></div><span className={`service-status ${catalogOnline ? 'online' : ''}`}>{catalogOnline ? 'Conectado' : 'Desconectado'}</span></section>
         <section className="setting-row"><span className="setting-icon"><Clock3 size={19}/></span><div><strong>Reintentos</strong><small>Máximo 2 intentos automáticos por carpeta. Si falla, conserva el punto de continuación.</small></div><span className="setting-value">Rápido y limitado</span></section>
         <section className="setting-row"><span className="setting-icon"><Bookmark size={19}/></span><div><strong>Datos guardados</strong><small>{nodes.length.toLocaleString('es')} elementos · {favorites.size} favoritos · {lists.length} listas</small></div><span className="service-status online">En este dispositivo</span></section>
         <section className="setting-row"><span className="setting-icon"><HardDriveDownload size={19}/></span><div><strong>Protección del índice</strong><small>{browserStorage?.persistent === true

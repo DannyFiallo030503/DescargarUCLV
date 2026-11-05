@@ -53,7 +53,6 @@ function applyBrowserAccess(request, response) {
     response.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, POST, DELETE, OPTIONS')
     response.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-UCLV-Request, Range, If-Range')
     response.setHeader('Access-Control-Max-Age', '600')
-    response.setHeader('Access-Control-Allow-Private-Network', 'true')
     response.writeHead(204)
     response.end()
     return true
