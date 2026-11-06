@@ -31,4 +31,15 @@ public class TransferProtocolTest {
         assertTrue(TransferProtocol.validatorMatches(null, "Tue, 03 Nov 2026 10:00:00 GMT", null, "Tue, 03 Nov 2026 10:00:00 GMT"));
         assertFalse(TransferProtocol.validatorMatches(null, null, "\"v1\"", null));
     }
+
+    @Test public void retriesUseBoundedBackoffWithJitterAndTransientHttpStatuses() {
+        assertTrue(TransferProtocol.downloadRetryDelay(1) >= 12_000L);
+        assertTrue(TransferProtocol.downloadRetryDelay(1) <= 18_000L);
+        assertTrue(TransferProtocol.downloadRetryDelay(2) >= 48_000L);
+        assertTrue(TransferProtocol.downloadRetryDelay(2) <= 72_000L);
+        assertTrue(TransferProtocol.retryableStatus(408));
+        assertTrue(TransferProtocol.retryableStatus(429));
+        assertTrue(TransferProtocol.retryableStatus(503));
+        assertFalse(TransferProtocol.retryableStatus(404));
+    }
 }

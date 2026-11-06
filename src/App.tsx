@@ -13,7 +13,7 @@ import { groupRelatedSeries } from '@/domain/grouping'
 import { makeBackupDocument, parseBackup, type BackupPreview } from '@/data/backup'
 import { inspectBrowserStorage, requestPersistentStorage, type BrowserStorageInfo } from '@/data/browser-storage'
 import { CatalogSyncService } from '@/application/catalog-sync'
-import { LocalGatewayCatalogAdapter } from '@/application/catalog-adapter'
+import { HostedCatalogAdapter } from '@/application/hosted-catalog-adapter'
 import { NativeCatalogAdapter } from '@/application/native-catalog-adapter'
 import { androidDownloads, type AndroidDestinationInfo } from '@/application/android-downloads'
 import { sourceUrlForPath } from '@/application/source-url'
@@ -23,7 +23,7 @@ import {
 } from '@/data/database'
 
 type Screen = 'home' | 'explore' | 'favorites' | 'lists' | 'downloads' | 'settings'
-type DownloadItemView = { id: string; name: string; path: string; sizeBytes?: number; bytesDone: number; status: string; error?: string }
+type DownloadItemView = { id: string; name: string; path: string; sizeBytes?: number; sizeExact?: boolean; bytesDone: number; status: string; error?: string; retryAttempts?: number; nextAttemptAt?: number }
 type DownloadJobView = { id: string; destination: string; destinationFreeBytes?: number; status: string; updatedAt: number; items: DownloadItemView[] }
 type DownloadSnapshot = { destination: string; freeBytes: number; jobs: DownloadJobView[] }
 type PendingDownloadPlan = { ids: string[]; clearSelection: boolean }
@@ -64,22 +64,11 @@ function App() {
   const [connectionError, setConnectionError] = useState('')
   const [vercelCatalog, setVercelCatalog] = useState(false)
   const [apiBase, setApiBase] = useState('')
-  const [gatewayAccessToken, setGatewayAccessToken] = useState('')
-  const [gatewayUrlDraft, setGatewayUrlDraft] = useState('')
-  const [gatewayTokenDraft, setGatewayTokenDraft] = useState('')
-  const [gatewayConnecting, setGatewayConnecting] = useState(false)
-  const [gatewayConnectionError, setGatewayConnectionError] = useState('')
-  const [previewTicket, setPreviewTicket] = useState('')
-  const [previewTicketError, setPreviewTicketError] = useState('')
   const [nativeDestination, setNativeDestination] = useState<AndroidDestinationInfo | null>(null)
   const nativePlatform = Capacitor.isNativePlatform()
-  const mobileBrowser = typeof navigator !== 'undefined' && (
-    /Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
-    || (/Macintosh/i.test(navigator.userAgent) && navigator.maxTouchPoints > 1)
-  )
-  const mobileWebWithoutGateway = vercelCatalog && mobileBrowser && !nativePlatform
-  const mobileBrowserRemote = mobileBrowser && !nativePlatform && Boolean(gatewayAccessToken)
-  const directBrowserMedia = vercelCatalog && !gatewayOnline && !gatewayAccessToken && !nativePlatform
+  const mobileBrowserRemote = false
+  const managedDownloads = nativePlatform || gatewayOnline
+  const directBrowserMedia = !managedDownloads
   const [browserStorage, setBrowserStorage] = useState<BrowserStorageInfo | null>(null)
   const [currentScreen, setCurrentScreen] = useState<Screen>('home')
   const [currentPath, setCurrentPath] = useState('/')
@@ -111,11 +100,7 @@ function App() {
   const searchInputRef = useRef<HTMLInputElement>(null)
   const dialogReturnFocusRef = useRef<HTMLElement | null>(null)
   const apiUrl = (path: string) => `${apiBase}${path}`
-  const apiFetch = (path: string, init: RequestInit = {}) => {
-    const headers = new Headers(init.headers)
-    if (gatewayAccessToken) headers.set('X-UCLV-Access', gatewayAccessToken)
-    return fetch(apiUrl(path), { ...init, headers })
-  }
+  const apiFetch = (path: string, init: RequestInit = {}) => fetch(apiUrl(path), init)
 
   useEffect(() => {
     const handleShortcut = (event: KeyboardEvent) => {
@@ -187,49 +172,16 @@ function App() {
   useEffect(() => {
     let active = true
     void (async () => {
+      let resumeInterruptedSync = false
       try {
         await catalogRepository.ensureFixture()
+        const savedSyncState = await catalogRepository.getSyncState()
+        resumeInterruptedSync = (savedSyncState.phase === 'running' || savedSyncState.phase === 'partial')
+          && await catalogRepository.hasAutomaticSyncWork()
         await refreshLocalData(true)
         setBrowserStorage(await inspectBrowserStorage())
-        const savedGatewayUrl = localStorage.getItem('uclv-mobile-gateway-url') || ''
-        const savedGatewayToken = localStorage.getItem('uclv-mobile-gateway-token') || ''
-        if (savedGatewayUrl && savedGatewayToken) {
-          setGatewayUrlDraft(savedGatewayUrl)
-          setGatewayTokenDraft(savedGatewayToken)
-          try {
-            const health = await fetch(`${savedGatewayUrl}/api/health`, {
-              cache: 'no-store', signal: AbortSignal.timeout(4_000),
-              headers: { 'X-UCLV-Access': savedGatewayToken },
-            })
-            if (health.ok) {
-              if (active) {
-                setApiBase(savedGatewayUrl)
-                setGatewayAccessToken(savedGatewayToken)
-                setGatewayOnline(true)
-                setCatalogOnline(true)
-                setVercelCatalog(false)
-              }
-              if (nativePlatform) {
-                const [destination, snapshot] = await Promise.all([
-                  androidDownloads.getDestinationInfo(),
-                  androidDownloads.getSnapshot(),
-                ])
-                if (active) {
-                  setNativeDestination(destination)
-                  setDownloadSnapshot(snapshot as DownloadSnapshot)
-                }
-              } else {
-                const downloads = await fetch(`${savedGatewayUrl}/api/downloads`, {
-                  cache: 'no-store', headers: { 'X-UCLV-Access': savedGatewayToken },
-                })
-                if (downloads.ok && active) setDownloadSnapshot(await downloads.json() as DownloadSnapshot)
-              }
-              return
-            }
-          } catch {
-            if (active) setGatewayConnectionError('El túnel guardado ya no responde. Inicia uno nuevo y actualiza su dirección.')
-          }
-        }
+        localStorage.removeItem('uclv-mobile-gateway-url')
+        localStorage.removeItem('uclv-mobile-gateway-token')
         if (nativePlatform) {
           const [online] = await Promise.all([
             nativeCatalog.current!.checkConnection().catch((error: unknown) => {
@@ -255,21 +207,29 @@ function App() {
           if (active) setCatalogOnline(online)
         } else {
           const servedByVercel = window.location.hostname.endsWith('.vercel.app')
-          const health = await fetch('/api/health', { cache: 'no-store' })
-          const healthInfo = health.ok ? await health.json().catch(() => ({})) as { ok?: boolean; downloadsAvailable?: boolean; catalogAvailable?: boolean; vercelMode?: boolean } : {}
-          const serviceHealthy = health.ok && healthInfo.catalogAvailable !== false
-          const hasLocalDownloads = serviceHealthy && healthInfo.downloadsAvailable !== false
+          const serviceHealthy = await fetch('/api/health', { cache: 'no-store' })
+            .then(async (response) => {
+              if (!response.ok) return false
+              const health = await response.json() as { ok?: boolean; source?: string }
+              return health.ok === true && health.source === 'https://visuales.uclv.cu'
+            })
+            .catch(() => false)
+          const localDownloads = serviceHealthy
+            ? await fetch('/api/downloads', { cache: 'no-store' })
+              .then(async (response) => response.ok ? await response.json() as DownloadSnapshot : undefined)
+              .catch(() => undefined)
+            : undefined
           if (active) {
             setApiBase('')
-            setGatewayOnline(hasLocalDownloads)
+            setGatewayOnline(serviceHealthy)
             setCatalogOnline(serviceHealthy)
-            const isStaticVercel = (healthInfo.vercelMode === true || servedByVercel) && !serviceHealthy
-            setVercelCatalog(isStaticVercel)
-            if (isStaticVercel) setDownloadSnapshot((current) => ({ ...current, destination: 'Download' }))
-          }
-          if (hasLocalDownloads && active) {
-            const downloads = await fetch('/api/downloads', { cache: 'no-store' })
-            if (downloads.ok) setDownloadSnapshot(await downloads.json() as DownloadSnapshot)
+            setVercelCatalog(!serviceHealthy && (servedByVercel || window.location.protocol === 'https:'))
+            if (localDownloads) {
+              setDownloadSnapshot(localDownloads)
+              setDestinationDraft(localDownloads.destination)
+            } else {
+              setDownloadSnapshot((current) => ({ ...current, destination: 'Download' }))
+            }
           }
         }
       } catch {
@@ -277,6 +237,7 @@ function App() {
       } finally {
         if (active) setBusy(false)
       }
+      if (active && resumeInterruptedSync) void startSync(true)
     })()
     return () => { active = false }
   }, [])
@@ -298,24 +259,6 @@ function App() {
     return () => { active = false; clearTimeout(timer) }
   }, [query, nodes])
 
-  useEffect(() => {
-    let active = true
-    setPreviewTicket('')
-    setPreviewTicketError('')
-    if (!previewNode || nativePlatform || !gatewayAccessToken) return () => { active = false }
-    void apiFetch('/api/mobile-ticket', {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ path: previewNode.relativePath }),
-    }).then(async (response) => {
-      const payload = await response.json().catch(() => ({})) as { ticket?: string; error?: string }
-      if (!response.ok || !payload.ticket) throw new Error(payload.error || 'No se pudo preparar la vista previa.')
-      if (active) setPreviewTicket(payload.ticket)
-    }).catch((error: unknown) => {
-      if (active) setPreviewTicketError(error instanceof Error ? error.message : 'No se pudo preparar la vista previa.')
-    })
-    return () => { active = false }
-  }, [previewNode, nativePlatform, gatewayAccessToken, apiBase])
-
   const nodeById = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes])
   const currentNode = nodeById.get(currentPath) ?? nodeById.get('/')
   const currentChildren = useMemo(() => childNodes(currentNode?.id ?? '/', nodes), [currentNode, nodes])
@@ -328,17 +271,15 @@ function App() {
   const selection = useMemo(() => summarizeSelection(nodes, selectedIds), [nodes, selectedIds])
   const selectionMarks = useMemo(() => buildSelectionMarks(nodes, selectedIds), [nodes, selectedIds])
   const favoriteNodes = [...favorites].map((id) => nodeById.get(id) ?? favoriteSnapshots.get(id)).filter((node): node is CatalogNode => Boolean(node))
-  const queuedPaths = new Set(mobileBrowserRemote ? [] : downloadSnapshot.jobs.filter((job) => job.destination === downloadSnapshot.destination).flatMap((job) => job.items.map((item) => item.path)))
+  const queuedPaths = new Set(mobileBrowserRemote ? [] : downloadSnapshot.jobs
+    .filter((job) => job.destination === downloadSnapshot.destination)
+    .flatMap((job) => job.items.map((item) => item.path)))
   const pendingNodes = pendingDownloadPlan?.ids.map((id) => nodeById.get(id)).filter((node): node is CatalogNode => node?.kind === 'file') ?? []
   const pendingDuplicates = pendingNodes.filter((node) => queuedPaths.has(node.relativePath)).length
   const newPendingNodes = pendingNodes.filter((node) => !queuedPaths.has(node.relativePath))
-  const pendingSummary = summarizeSelection(nodes, new Set(newPendingNodes.map((node) => node.id)))
+  const pendingSummary = summarizeSelection(nodes, new Set(pendingNodes.map((node) => node.id)))
   const missingPendingCount = pendingDownloadPlan ? pendingDownloadPlan.ids.length - pendingNodes.length : 0
   const destinationReady = mobileBrowserRemote || gatewayOnline || (nativePlatform && nativeDestination?.supported === true && typeof nativeDestination.freeBytes === 'number')
-  const pendingRequiredBytes = nativePlatform
-    ? pendingSummary.knownBytes * 2 + (pendingSummary.knownBytes > 0 ? 64 * 1024 ** 2 : 0)
-    : pendingSummary.knownBytes
-  const pendingFits = mobileBrowserRemote || (destinationReady && pendingRequiredBytes <= downloadSnapshot.freeBytes)
 
   function navigate(screen: Screen) {
     setCurrentScreen(screen)
@@ -368,90 +309,27 @@ function App() {
     if (value.trim()) setCurrentPath('/')
   }
 
-  async function connectLocalGatewayFromClick(): Promise<string | null> {
-    const localBase = 'http://127.0.0.1:4179'
-    try {
-      const health = await fetch(`${localBase}/api/health`, { cache: 'no-store', signal: AbortSignal.timeout(30_000) })
-      if (!health.ok || (await health.json().catch(() => ({})) as { ok?: boolean }).ok === false) {
-        throw new Error('El gateway local no respondió correctamente.')
-      }
-      setApiBase(localBase)
-      setGatewayAccessToken('')
-      setGatewayOnline(true)
-      setCatalogOnline(true)
-      setVercelCatalog(false)
-      const downloads = await fetch(`${localBase}/api/downloads`, { cache: 'no-store' })
-      if (downloads.ok) setDownloadSnapshot(await downloads.json() as DownloadSnapshot)
-      return localBase
-    } catch {
-      const message = 'Chrome no pudo conectar con el gateway local. Comprueba que esté abierto y permite el acceso a la red local para UCLV Media en los permisos del sitio.'
-      setSyncState((current) => ({ ...current, phase: 'error', lastError: message }))
-      return null
+  async function startSync(autoResume = false) {
+    const savedSyncState = await catalogRepository.getSyncState()
+    if (!autoResume && syncState.phase === 'running') return
+    if (!autoResume) {
+      // Request storage protection directly from the user's Sync click before awaiting network work.
+      const storageRequest = requestPersistentStorage()
+      setBrowserStorage(await storageRequest)
     }
-  }
-
-  async function connectRemoteGateway(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    setGatewayConnecting(true)
-    setGatewayConnectionError('')
-    try {
-      const parsed = new URL(gatewayUrlDraft.trim())
-      if (parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.search || parsed.hash) {
-        throw new Error('Usa la dirección HTTPS completa del túnel, sin usuario, clave ni parámetros.')
-      }
-      const base = parsed.origin
-      const token = gatewayTokenDraft.trim()
-      if (!token) throw new Error('Escribe la clave temporal que muestra el gateway en el ordenador.')
-      const health = await fetch(`${base}/api/health`, {
-        cache: 'no-store', signal: AbortSignal.timeout(15_000),
-        headers: { 'X-UCLV-Access': token },
-      })
-      if (!health.ok) {
-        const body = await health.json().catch(() => ({})) as { error?: string }
-        throw new Error(body.error || `El gateway respondió HTTP ${health.status}.`)
-      }
-      localStorage.setItem('uclv-mobile-gateway-url', base)
-      localStorage.setItem('uclv-mobile-gateway-token', token)
-      setApiBase(base)
-      setGatewayAccessToken(token)
-      setGatewayOnline(true)
-      setCatalogOnline(true)
-      setVercelCatalog(false)
-      setGatewayTokenDraft(token)
-      setGatewayConnectionError('')
-      const downloads = await fetch(`${base}/api/downloads`, { cache: 'no-store', headers: { 'X-UCLV-Access': token } })
-      if (downloads.ok) setDownloadSnapshot(await downloads.json() as DownloadSnapshot)
-    } catch (error) {
-      setGatewayConnectionError(error instanceof Error ? error.message : 'No se pudo conectar con el gateway móvil.')
-    } finally {
-      setGatewayConnecting(false)
-    }
-  }
-
-  async function startSync() {
-    if (syncState.phase === 'running') return
-    let selectedApiBase = apiBase
-    if (!catalogOnline && vercelCatalog) {
-      const connected = await connectLocalGatewayFromClick()
-      if (!connected) return
-      selectedApiBase = connected
-    } else if (!catalogOnline) return
-    // Request storage protection directly from the user's Sync click before awaiting network work.
-    const storageRequest = requestPersistentStorage()
-    setBrowserStorage(await storageRequest)
     syncService.current = new CatalogSyncService(
-      nativePlatform && !(selectedApiBase && gatewayAccessToken)
-        ? nativeCatalog.current!
-        : new LocalGatewayCatalogAdapter(selectedApiBase, gatewayAccessToken),
+      nativePlatform ? nativeCatalog.current! : new HostedCatalogAdapter(),
       (entries) => searchWorker.current?.update(entries),
     )
+    const retryDeferred = !autoResume && (savedSyncState.phase === 'partial'
+      || (savedSyncState.phase === 'paused' && (savedSyncState.deferredDirectories ?? 0) > 0))
     const result = await syncService.current.run((state) => {
       setSyncState(state)
       if (state.directoriesDone % 5 === 0 || state.phase !== 'running') void refreshLocalData()
       if (state.directoriesDone % 100 === 0 || state.phase !== 'running') {
         void inspectBrowserStorage().then(setBrowserStorage)
       }
-    })
+    }, { retryDeferred })
     setSyncState(result)
     await refreshLocalData()
   }
@@ -461,12 +339,7 @@ function App() {
     setConnectionChecking(true)
     setConnectionError('')
     try {
-      if (apiBase && gatewayAccessToken) {
-        const health = await apiFetch('/api/health', { cache: 'no-store', signal: AbortSignal.timeout(15_000) })
-        if (!health.ok) throw new Error(`El gateway respondió HTTP ${health.status}.`)
-      } else {
-        await nativeCatalog.current!.checkConnection()
-      }
+      await nativeCatalog.current!.checkConnection()
       setCatalogOnline(true)
       setConnectionError('')
     } catch (error) {
@@ -598,26 +471,33 @@ function App() {
       setDownloadMessage('Este Android no tiene disponible el destino seguro para estas descargas.')
       return
     }
-    if (!gatewayOnline && !nativePlatform) {
-      setDownloadMessage('Conecta el servicio de descargas en este dispositivo para iniciar transferencias. Tu selección y tus listas siguen guardadas.')
-      return
-    }
     const selected = new Set(ids)
     const selectedFiles = resolveSelectedFiles(selected, nodes)
     const items = selectedFiles.map((node) => ({
-      id: node.id, name: node.name, path: node.relativePath, sizeBytes: node.sizeBytes,
+      id: node.id, name: node.name, path: node.relativePath, sizeBytes: node.sizeBytes, sizeExact: node.sizeExact,
     }))
     if (!items.length) {
       setDownloadMessage('No se encontraron archivos de esta selección en el índice guardado.')
       return
     }
-    const summary = summarizeSelection(nodes, new Set(selectedFiles.map((item) => item.id)))
-    const requiredBytes = nativePlatform ? summary.knownBytes * 2 + (summary.knownBytes ? 64 * 1024 ** 2 : 0) : summary.knownBytes
-    if (!mobileBrowserRemote && requiredBytes > downloadSnapshot.freeBytes) {
-      setDownloadMessage(`No hay espacio suficiente en ${downloadSnapshot.destination || 'Descargas'}. La selección necesita aproximadamente ${formatBytes(requiredBytes)} incluyendo temporales y hay ${formatBytes(downloadSnapshot.freeBytes)} libres.`)
-      return
-    }
     try {
+      if (!nativePlatform && !gatewayOnline) {
+        for (const item of items) {
+          const link = document.createElement('a')
+          link.href = sourceUrlForPath(item.path)
+          link.download = item.name
+          link.rel = 'noreferrer'
+          document.body.append(link)
+          link.click()
+          link.remove()
+          await new Promise((resolve) => window.setTimeout(resolve, 350))
+        }
+        setDownloadMessage(`${items.length} archivos enviados al navegador para abrirse directamente desde UCLV. Chrome administra el avance y las descargas múltiples.`)
+        if (clearSelection) setSelectedIds(new Set())
+        setPendingDownloadPlan(null)
+        setCurrentScreen('downloads')
+        return
+      }
       if (mobileBrowserRemote) {
         let started = 0
         for (const item of items) {
@@ -678,6 +558,11 @@ function App() {
 
   async function confirmDownloadPlan() {
     if (!pendingDownloadPlan) return
+    if (!newPendingNodes.length && pendingDuplicates > 0 && (nativePlatform || gatewayOnline)) {
+      setPendingDownloadPlan(null)
+      navigate('downloads')
+      return
+    }
     await enqueueIds(newPendingNodes.map((node) => node.id), pendingDownloadPlan.clearSelection)
   }
 
@@ -774,8 +659,9 @@ function App() {
       {canOpen ? <button className="entry-details" onClick={() => isDirectory ? openDirectory(node) : openPreview(node)}>
         <strong>{node.name}</strong>
         <span>{!isCurrent ? `Ya no aparece en el índice · ${node.relativePath}` : isDirectory ? `${count} elementos directos` : node.relativePath}</span>
+        {!isDirectory && <small className="entry-metadata">{formatBytes(node.sizeBytes)}{node.sizeExact === false ? ' aprox.' : ''}{node.mimeType ? ` · ${node.mimeType}` : ''}{node.modifiedAt ? ` · ${node.modifiedAt}` : ''}</small>}
       </button> : <div className="entry-details"><strong>{node.name}</strong><span>{!isCurrent ? `Ya no aparece en el índice · ${node.relativePath}` : isDirectory ? 'Carpeta' : node.relativePath}</span></div>}
-      <span className="entry-size">{isDirectory ? 'Carpeta' : formatBytes(node.sizeBytes)}</span>
+      <span className="entry-size">{isDirectory ? 'Carpeta' : `${node.sizeExact === false ? '≈ ' : ''}${formatBytes(node.sizeBytes)}`}</span>
       {canPreview && <button className="icon-button" aria-label={`Vista previa ${node.name}`} onClick={() => openPreview(node)}><Eye size={17}/></button>}
       <button
         className={`icon-button favorite-button ${favorites.has(node.id) ? 'is-favorite' : ''}`}
@@ -830,15 +716,13 @@ function App() {
       <span className="sync-icon">{running ? <LoaderCircle className="spin" size={20} /> : completed ? <Check size={20} /> : <Sparkles size={19} />}</span>
       <div className="sync-copy">
         <strong>{running ? 'Actualizando tu biblioteca' : completed ? 'Biblioteca sincronizada' : partial ? 'Biblioteca actualizada parcialmente' : paused ? 'Sincronización pausada' : exampleMode ? 'Preparamos una pequeña vista de ejemplo' : 'Tu biblioteca está lista'}</strong>
-        <span>{mobileWebWithoutGateway ? 'El navegador puede abrir UCLV, pero no leer sus carpetas desde esta web: falta autorización CORS. Las imágenes y los vídeos sí pueden abrirse directamente; para sincronizar el índice, UCLV debe habilitar CORS o puedes conectar un puente.' : running ? `${syncState.directoriesDone} carpetas revisadas · ${syncState.filesFound} archivos encontrados` : paused ? `${syncState.directoriesDone} carpetas guardadas. Puedes continuar cuando quieras.` : partial ? `${syncState.directoriesDone} carpetas revisadas · ${syncState.filesFound.toLocaleString('es')} archivos · ${syncState.deferredDirectories ?? 0} carpetas lentas por reintentar` : completed ? `${syncState.filesFound.toLocaleString('es')} archivos · índice local listo` : exampleMode ? 'La muestra es orientativa. La sincronización completa puede tardar y se puede pausar.' : 'Tus carpetas y archivos guardados se pueden consultar sin conexión.'}</span>
-        {syncState.lastError && !mobileWebWithoutGateway && <span className="inline-error">{syncState.lastError}</span>}
+        <span>{running ? `${syncState.directoriesDone} carpetas revisadas · ${syncState.filesFound} archivos encontrados${(syncState.deferredDirectories ?? 0) > 0 ? ` · ${syncState.deferredDirectories} en espera${syncState.nextRetryAt ? `; próximo intento ${new Date(syncState.nextRetryAt).toLocaleTimeString('es')}` : ''}` : ''}` : paused ? `${syncState.directoriesDone} carpetas guardadas. Puedes continuar cuando quieras.` : partial ? `${syncState.directoriesDone} carpetas revisadas · ${syncState.filesFound.toLocaleString('es')} archivos · ${syncState.deferredDirectories ?? 0} carpetas pendientes de reintento` : completed ? `${syncState.filesFound.toLocaleString('es')} archivos · índice local listo` : exampleMode ? 'La muestra es orientativa. La sincronización directa puede pausarse y continuar.' : 'Tus carpetas y archivos guardados se pueden consultar sin conexión.'}</span>
+        {syncState.lastError && <span className="inline-error">{syncState.lastError}</span>}
       </div>
       {running
         ? <button className="button button-secondary" onClick={pauseSync}><Pause size={16} />Pausar</button>
-        : catalogOnline || (vercelCatalog && !mobileBrowser)
-          ? <button className="button button-primary" onClick={() => void startSync()}><Download size={16} />{!catalogOnline && vercelCatalog ? 'Conectar y sincronizar' : paused ? 'Continuar' : partial ? `Reintentar ${syncState.deferredDirectories ?? ''} carpetas` : completed ? 'Actualizar índice' : 'Sincronizar índice'}</button>
-          : mobileWebWithoutGateway
-            ? <button className="button button-primary" onClick={() => navigate('settings')}>Ver opciones para sincronizar</button>
+        : catalogOnline || !nativePlatform
+          ? <button className="button button-primary" onClick={() => void startSync()}><Download size={16} />{paused ? 'Continuar' : partial ? `Reintentar ${syncState.deferredDirectories ?? ''} carpetas` : completed ? 'Actualizar índice' : 'Sincronizar directamente'}</button>
           : nativePlatform
             ? <button className="button button-secondary" onClick={() => void retryNativeConnection()} disabled={connectionChecking}><Wifi size={16}/>{connectionChecking ? 'Comprobando…' : 'Probar conexión'}</button>
           : <span className="sync-offline"><WifiOff size={15} />Catálogo sin conexión</span>}
@@ -877,7 +761,7 @@ function App() {
         {crumbs.map((crumb) => <span key={crumb.id} className="breadcrumb-part"><ChevronRight size={14}/><button onClick={() => setCurrentPath(crumb.id)}>{crumb.name}</button></span>)}
       </div>
       <div className="page-title-row"><div><p className="eyebrow">{searching ? 'Búsqueda en el dispositivo' : 'Explorar carpetas'}</p><h1>{searching ? 'Resultados' : currentNode?.name ?? 'Biblioteca'}</h1><p className="page-subtitle">{searching ? `Coincidencias para “${query}” en el índice guardado.` : 'Navega por el contenido y selecciona solo lo que quieres guardar.'}</p></div>
-        {!searching && <button className="button button-secondary" onClick={() => void (mobileWebWithoutGateway ? navigate('settings') : nativePlatform && !catalogOnline ? retryNativeConnection() : startSync())} disabled={(!catalogOnline && !nativePlatform && (!vercelCatalog || mobileBrowser)) || syncState.phase === 'running' || connectionChecking}><Download size={16}/>{mobileWebWithoutGateway ? 'Configurar gateway móvil' : nativePlatform && !catalogOnline ? connectionChecking ? 'Comprobando…' : 'Probar conexión' : !catalogOnline && vercelCatalog ? 'Conectar gateway local' : 'Actualizar índice'}</button>}
+        {!searching && <button className="button button-secondary" onClick={() => void (nativePlatform && !catalogOnline ? retryNativeConnection() : startSync())} disabled={syncState.phase === 'running' || connectionChecking}><Download size={16}/>{nativePlatform && !catalogOnline ? connectionChecking ? 'Comprobando…' : 'Probar conexión' : 'Actualizar índice'}</button>}
       </div>
       {searching ? <>
         {currentSearchView?.pending ? <div className="result-count" role="status">Buscando en tu biblioteca…</div> : <>
@@ -924,10 +808,10 @@ function App() {
 
   function renderDownloads() {
     const labels: Record<string, string> = { queued: 'En cola', downloading: 'Descargando', paused: 'Pausada', completed: 'Completada', error: 'Requiere atención' }
-    if (mobileBrowserRemote) return <><div className="page-title-row"><div><p className="eyebrow">Descargas del teléfono</p><h1>Descargas</h1><p className="page-subtitle">Los archivos se guardan en la carpeta Descargas de Chrome en este dispositivo.</p></div><button className="button button-secondary" onClick={() => navigate('explore')}>Explorar</button></div><section className="download-info"><span className="download-info-icon"><HardDriveDownload size={23}/></span><div><strong>Destino: Descargas de Chrome</strong><p>Chrome administra el espacio, el avance y las pausas. Para colas persistentes que continúen después de cerrar la aplicación, usa la APK.</p></div><CircleHelp size={19}/></section>{downloadMessage && <div className="download-message" role="status"><span>{downloadMessage}</span><button className="icon-button" aria-label="Cerrar aviso" onClick={() => setDownloadMessage('')}><X size={16}/></button></div>}<div className="empty-card"><Download size={24}/><strong>Revisa el avance en Chrome</strong><span>Abre el menú de Chrome y entra en Descargas para ver o reanudar los archivos que ya empezaron.</span></div></>
-    if (!gatewayOnline && !nativeDestination?.supported) return <><div className="page-title-row"><div><p className="eyebrow">Transferencias guardadas</p><h1>Descargas</h1><p className="page-subtitle">{nativePlatform ? 'Este Android no tiene disponible el destino seguro de descargas.' : 'Conecta el servicio local para consultar tus transferencias.'}</p></div></div>{nativePlatform && <section className="download-info"><span className="download-info-icon"><HardDriveDownload size={23}/></span><div><strong>Destino predeterminado: {downloadSnapshot.destination || 'Comprobando…'}</strong><p>{nativeDestination?.spaceError || 'El destino y el espacio todavía no están disponibles.'}</p></div><CircleHelp size={19}/></section>}<div className="empty-card"><HardDriveDownload size={24}/><strong>{nativePlatform ? 'Destino Android no compatible' : 'Inicia el servicio local'}</strong><span>{nativePlatform ? 'Puedes seguir explorando y guardar favoritos y listas. No se habilitan transferencias si Android no puede proteger el destino.' : 'Abre la aplicación con el servicio local para consultar tus transferencias guardadas.'}</span></div></>
+    if (!nativePlatform && !gatewayOnline) return <><div className="page-title-row"><div><p className="eyebrow">Descargas del navegador</p><h1>Descargas</h1><p className="page-subtitle">Los archivos se abren directamente desde UCLV y se guardan según la configuración de tu navegador.</p></div><button className="button button-secondary" onClick={() => navigate('explore')}>Explorar</button></div><section className="download-info"><span className="download-info-icon"><HardDriveDownload size={23}/></span><div><strong>Destino: Descargas del navegador</strong><p>El navegador administra el espacio y el avance. Para una cola reanudable que siga funcionando con la app cerrada, usa la APK.</p></div><CircleHelp size={19}/></section>{downloadMessage && <div className="download-message" role="status"><span>{downloadMessage}</span><button className="icon-button" aria-label="Cerrar aviso" onClick={() => setDownloadMessage('')}><X size={16}/></button></div>}<div className="empty-card"><Download size={24}/><strong>Revisa el avance en tu navegador</strong><span>Abre el menú del navegador y entra en Descargas para ver los archivos que empezaron.</span></div></>
+    if (nativePlatform && !nativeDestination?.supported) return <><div className="page-title-row"><div><p className="eyebrow">Transferencias guardadas</p><h1>Descargas</h1><p className="page-subtitle">Este Android no tiene disponible el destino seguro de descargas.</p></div></div><section className="download-info"><span className="download-info-icon"><HardDriveDownload size={23}/></span><div><strong>Destino predeterminado: {downloadSnapshot.destination || 'Comprobando…'}</strong><p>{nativeDestination?.spaceError || 'El destino y el espacio todavía no están disponibles.'}</p></div><CircleHelp size={19}/></section><div className="empty-card"><HardDriveDownload size={24}/><strong>Destino Android no compatible</strong><span>Puedes seguir explorando y guardar favoritos y listas. No se habilitan transferencias si Android no puede proteger el destino.</span></div></>
     return <><div className="page-title-row"><div><p className="eyebrow">Transferencias guardadas</p><h1>Descargas</h1><p className="page-subtitle">La cola y los archivos parciales se guardan en este dispositivo.</p></div><button className="button button-secondary" onClick={() => void refreshDownloads()}><Clock3 size={16}/>Actualizar</button></div>
-      <section className="download-info"><span className="download-info-icon"><HardDriveDownload size={23}/></span><div><strong>Destino predeterminado para nuevas descargas: {downloadSnapshot.destination || 'Cargando carpeta…'}</strong><p>{destinationReady ? `${formatBytes(downloadSnapshot.freeBytes)} disponibles · ` : ''}{gatewayOnline ? 'Cada trabajo conserva su propio destino.' : nativePlatform ? 'Las descargas de Android se guardan y se pueden reanudar desde esta lista.' : 'Conecta el servicio local para habilitar las transferencias.'}</p></div><CircleHelp size={19}/></section>
+      <section className="download-info"><span className="download-info-icon"><HardDriveDownload size={23}/></span><div><strong>Destino predeterminado para nuevas descargas: {downloadSnapshot.destination || 'Cargando carpeta…'}</strong><p>{destinationReady ? `${formatBytes(downloadSnapshot.freeBytes)} disponibles · ` : ''}{gatewayOnline ? 'Cada trabajo conserva su propio destino.' : nativePlatform ? 'Las descargas de Android se guardan y se pueden reanudar desde esta lista.' : 'El navegador administra las descargas directas desde UCLV.'}</p></div><CircleHelp size={19}/></section>
       {downloadMessage && <div className="download-message" role="status"><span>{downloadMessage}</span><button className="icon-button" aria-label="Cerrar aviso" onClick={() => setDownloadMessage('')}><X size={16}/></button></div>}
       {downloadSnapshot.jobs.length ? <div className="download-jobs">{downloadSnapshot.jobs.map((job) => {
         const total = job.items.reduce((sum, item) => sum + (item.sizeBytes ?? 0), 0)
@@ -938,7 +822,7 @@ function App() {
           <div className="download-job-destination"><span>Destino de esta lista</span><strong>{job.destination}</strong><small>{job.destinationFreeBytes === undefined ? 'Espacio disponible no consultable' : `${formatBytes(job.destinationFreeBytes)} disponibles`}</small></div>
           <div className="download-job-progress" role="progressbar" aria-label="Progreso de la lista" aria-valuenow={Math.round(percent)} aria-valuemin={0} aria-valuemax={100}><span style={{ width: `${percent}%` }}/></div>
           <div className="download-job-detail"><span>{formatBytes(done)} de {total ? formatBytes(total) : 'tamaño por determinar'}{remaining ? ` · ${remaining} pendientes` : ''}</span><span>{Math.round(percent)}%</span></div>
-          <div className="download-job-items">{job.items.slice(0, 8).map((item) => <div className="download-job-item" key={item.id}><FileVideo2 size={15}/><span>{item.name}</span><small>{item.status === 'completed' ? 'Lista' : item.error || `${formatBytes(item.bytesDone)}${item.sizeBytes ? ` / ${formatBytes(item.sizeBytes)}` : ''}`}</small></div>)}{job.items.length > 8 && <small className="more-items">y {job.items.length - 8} archivos más</small>}</div>
+        <div className="download-job-items">{job.items.slice(0, 8).map((item) => <div className="download-job-item" key={item.id}><FileVideo2 size={15}/><span>{item.name}</span><small>{item.status === 'completed' ? 'Lista' : item.error || `${formatBytes(item.bytesDone)}${item.sizeBytes ? ` / ${item.sizeExact === false ? '≈ ' : ''}${formatBytes(item.sizeBytes)}` : ''}`}</small></div>)}{job.items.length > 8 && <small className="more-items">y {job.items.length - 8} archivos más</small>}</div>
           <div className="download-job-actions">{['queued', 'downloading'].includes(job.status) && <button className="button button-secondary" onClick={() => void mutateDownload(`/api/downloads/${job.id}/pause`, 'POST')}><Pause size={15}/>Pausar</button>}{['paused', 'error'].includes(job.status) && <button className="button button-primary" onClick={() => void mutateDownload(`/api/downloads/${job.id}/resume`, 'POST')}><Download size={15}/>Reanudar</button>}{job.status !== 'downloading' && <button className="button button-secondary" onClick={() => void mutateDownload(`/api/downloads/${job.id}`, 'DELETE')}><X size={15}/>Quitar</button>}</div>
         </section>
       })}</div> : <div className="empty-card"><Download size={24}/><strong>Tu cola está vacía</strong><span>Busca un archivo, selecciónalo y ponlo en cola.</span><button className="button button-primary" onClick={() => navigate('explore')}>Explorar contenido</button></div>}
@@ -949,15 +833,9 @@ function App() {
     return <><div className="page-title-row"><div><p className="eyebrow">Ajustar a tu dispositivo</p><h1>Ajustes</h1><p className="page-subtitle">Preferencias claras. Las cambiamos cuando tú quieras.</p></div></div>
       {downloadMessage && <div className="download-message" role="status"><span>{downloadMessage}</span><button className="icon-button" aria-label="Cerrar aviso" onClick={() => setDownloadMessage('')}><X size={16}/></button></div>}
       <div className="settings-list">
-        <section className="setting-row"><span className="setting-icon"><HardDriveDownload size={19}/></span><div><strong>Carpeta de descarga</strong><small id="destination-help">{nativePlatform ? nativeDestination?.supported ? `Destino Android: ${nativeDestination.destination}. ${typeof nativeDestination.freeBytes === 'number' ? `${formatBytes(nativeDestination.freeBytes)} libres en el volumen.` : nativeDestination.spaceError || 'Espacio no disponible.'} La selección de otra carpeta se habilitará más adelante.` : nativeDestination?.spaceError || 'Comprobando el destino de este dispositivo…' : vercelCatalog && !apiBase ? 'Predeterminada: Download. El navegador guarda allí los archivos; por seguridad, una web sin gateway no puede elegir una ruta física ni medir el espacio libre.' : 'Predeterminada: Descargas/Descargar UCLV. Puedes cambiar la ruta completa desde el gateway; las colas ya creadas conservan su destino.'}</small></div>{vercelCatalog && !apiBase ? <div className="setting-destination-control"><label className="visually-hidden" htmlFor="destination-path">Carpeta predeterminada</label><input id="destination-path" value="Download" readOnly aria-describedby="destination-help"/><span className="setting-value">Predeterminada</span></div> : <form className="setting-destination-control" onSubmit={(event) => void saveDestination(event)}><label className="visually-hidden" htmlFor="destination-path">Ruta de descarga predeterminada</label><input id="destination-path" aria-describedby="destination-help" value={destinationDraft} onChange={(event) => setDestinationDraft(event.target.value)} placeholder="Ruta completa de Descargas" disabled={nativePlatform || !gatewayOnline}/><button type="submit" className="button button-secondary" disabled={nativePlatform || !gatewayOnline || !destinationDraft.trim()}>Guardar</button></form>}</section>
-        <section className="setting-row"><span className="setting-icon"><Wifi size={19}/></span><div><strong>Conexión al catálogo</strong><small>{nativePlatform ? catalogOnline ? apiBase && gatewayAccessToken ? 'Catálogo conectado a través del gateway temporal del ordenador; las descargas se guardan en este Android.' : 'Conexión HTTPS directa desde Android.' : connectionError || 'No se pudo conectar al catálogo; el índice guardado sigue disponible.' : vercelCatalog ? 'El navegador puede abrir los listados de UCLV, pero JavaScript no puede leerlos porque el origen no autoriza CORS. Para sincronizar, UCLV debe habilitar CORS o puedes conectar un puente.' : gatewayOnline ? apiBase ? 'Conectado al gateway de este equipo. Las consultas al origen salen por tu red local.' : 'Servicio local disponible. Las consultas al origen se hacen desde este dispositivo.' : 'Inicia el gateway local para consultar el catálogo.'}</small></div>{nativePlatform && !catalogOnline && <button className="button button-secondary" onClick={() => void retryNativeConnection()} disabled={connectionChecking}>{connectionChecking ? 'Comprobando…' : 'Probar conexión'}</button>}<span className={`service-status ${catalogOnline ? 'online' : ''}`}>{catalogOnline ? 'Conectado' : 'Desconectado'}</span></section>
-        <section className="setting-row setting-row-column"><span className="setting-icon"><Wifi size={19}/></span><div><strong>Puente para sincronizar desde el teléfono</strong><small>Las imágenes y los vídeos pueden abrirse directamente desde UCLV. Para leer carpetas y preparar listas, el navegador necesita que UCLV autorice CORS. Mientras eso no ocurra, ejecuta el gateway móvil y el túnel en un ordenador con acceso, y pega aquí su dirección y clave.</small></div><form className="remote-gateway-form" onSubmit={(event) => void connectRemoteGateway(event)}>
-          <label htmlFor="mobile-gateway-url">Dirección HTTPS del túnel</label><input id="mobile-gateway-url" type="url" inputMode="url" autoCapitalize="none" autoCorrect="off" placeholder="https://nombre.trycloudflare.com" value={gatewayUrlDraft} onChange={(event) => setGatewayUrlDraft(event.target.value)} />
-          <label htmlFor="mobile-gateway-token">Clave temporal</label><input id="mobile-gateway-token" type="password" autoComplete="off" value={gatewayTokenDraft} onChange={(event) => setGatewayTokenDraft(event.target.value)} />
-          {gatewayConnectionError && <span className="inline-error" role="alert">{gatewayConnectionError}</span>}
-          <div className="remote-gateway-actions"><button className="button button-primary" type="submit" disabled={gatewayConnecting || !gatewayUrlDraft.trim() || !gatewayTokenDraft.trim()}>{gatewayConnecting ? 'Conectando…' : 'Conectar y guardar'}</button>{gatewayAccessToken && <button className="button button-secondary" type="button" onClick={() => { localStorage.removeItem('uclv-mobile-gateway-url'); localStorage.removeItem('uclv-mobile-gateway-token'); setGatewayAccessToken(''); setGatewayUrlDraft(''); setGatewayTokenDraft(''); setApiBase(''); setGatewayOnline(false); setCatalogOnline(false); setVercelCatalog(true) }}>Desconectar</button>}</div>
-        </form></section>
-        <section className="setting-row"><span className="setting-icon"><Clock3 size={19}/></span><div><strong>Reintentos</strong><small>Máximo 2 intentos automáticos por carpeta. Si falla, conserva el punto de continuación.</small></div><span className="setting-value">Rápido y limitado</span></section>
+        <section className="setting-row"><span className="setting-icon"><HardDriveDownload size={19}/></span><div><strong>Carpeta de descarga</strong><small id="destination-help">{nativePlatform ? nativeDestination?.supported ? `Destino Android: ${nativeDestination.destination}. ${typeof nativeDestination.freeBytes === 'number' ? `${formatBytes(nativeDestination.freeBytes)} libres en el volumen.` : nativeDestination.spaceError || 'Espacio no disponible.'} La selección de otra carpeta se habilitará más adelante.` : nativeDestination?.spaceError || 'Comprobando el destino de este dispositivo…' : vercelCatalog && !apiBase ? 'El navegador guarda en su carpeta de Descargas y no informa el espacio libre de esa carpeta.' : 'Predeterminada: Descargas/Descargar UCLV.'}</small></div>{vercelCatalog && !apiBase ? <div className="setting-destination-control"><label className="visually-hidden" htmlFor="destination-path">Carpeta predeterminada</label><input id="destination-path" value="Download" readOnly aria-describedby="destination-help"/><span className="setting-value">Predeterminada</span></div> : <form className="setting-destination-control" onSubmit={(event) => void saveDestination(event)}><label className="visually-hidden" htmlFor="destination-path">Ruta de descarga predeterminada</label><input id="destination-path" aria-describedby="destination-help" value={destinationDraft} onChange={(event) => setDestinationDraft(event.target.value)} placeholder="Ruta completa de Descargas" disabled={nativePlatform || !gatewayOnline}/><button type="submit" className="button button-secondary" disabled={nativePlatform || !gatewayOnline || !destinationDraft.trim()}>Guardar</button></form>}</section>
+        <section className="setting-row"><span className="setting-icon"><Wifi size={19}/></span><div><strong>Conexión al catálogo</strong><small>{nativePlatform ? catalogOnline ? 'Android se conecta directamente por HTTPS a visuales.uclv.cu.' : connectionError || 'Android intenta conectarse directamente; el índice guardado sigue disponible.' : gatewayOnline ? 'Esta aplicación consulta el índice directamente desde este equipo. Las imágenes y los vídeos también se abren desde UCLV.' : 'La web consulta el catálogo por el servicio de UCLV Media. Las imágenes y los vídeos se abren directamente desde UCLV.'}</small></div>{nativePlatform && !catalogOnline && <button className="button button-secondary" onClick={() => void retryNativeConnection()} disabled={connectionChecking}>{connectionChecking ? 'Comprobando…' : 'Probar conexión'}</button>}<span className={`service-status ${catalogOnline ? 'online' : ''}`}>{catalogOnline ? 'Conectado' : 'Desconectado'}</span></section>
+        <section className="setting-row"><span className="setting-icon"><Clock3 size={19}/></span><div><strong>Reintentos</strong><small>Hasta 2 reintentos automáticos por carpeta, con esperas crecientes. El índice queda guardado para continuar después.</small></div><span className="setting-value">Limitados y recuperables</span></section>
         <section className="setting-row"><span className="setting-icon"><Bookmark size={19}/></span><div><strong>Datos guardados</strong><small>{nodes.length.toLocaleString('es')} elementos · {favorites.size} favoritos · {lists.length} listas</small></div><span className="service-status online">En este dispositivo</span></section>
         <section className="setting-row"><span className="setting-icon"><HardDriveDownload size={19}/></span><div><strong>Protección del índice</strong><small>{browserStorage?.persistent === true
           ? 'El navegador concedió protección ante limpieza automática por espacio. El índice y su punto de continuación quedan aquí; conserva también una copia aparte.'
@@ -989,7 +867,7 @@ function App() {
       <div className="nav-label">Biblioteca</div>
       <nav className="primary-nav" aria-label="Navegación principal">{navigation.map(({ id, label, icon: Icon }) => <button className={`nav-item ${currentScreen === id ? 'active' : ''}`} key={id} onClick={() => navigate(id)}><Icon size={18}/><span>{label}</span>{id === 'lists' && lists.length > 0 && <span className="nav-count">{lists.length}</span>}</button>)}</nav>
       <div className="sidebar-bottom">
-        <button className={`gateway-pill ${catalogOnline ? 'gateway-online' : ''}`} onClick={() => navigate('settings')}><span className="gateway-dot"/><span>{nativePlatform ? catalogOnline ? 'Catálogo conectado' : 'Catálogo sin conexión' : apiBase && catalogOnline ? 'Gateway de este equipo listo' : gatewayOnline ? 'Servicio local listo' : 'Servicio local requerido'}</span><ChevronRight size={14}/></button>
+        <button className={`gateway-pill ${catalogOnline ? 'gateway-online' : ''}`} onClick={() => navigate('settings')}><span className="gateway-dot"/><span>{nativePlatform ? catalogOnline ? 'Catálogo conectado' : 'Catálogo sin conexión' : 'Acceso directo a UCLV'}</span><ChevronRight size={14}/></button>
         <div className="sidebar-tip"><Sparkles size={16}/><span>Guarda tus listas. Las encuentras aquí cuando regreses.</span></div>
       </div>
     </aside>
@@ -1022,11 +900,8 @@ function App() {
       <section className="media-dialog" role="dialog" aria-modal="true" aria-labelledby="preview-title">
         <button className="preview-close icon-button" data-initial-focus aria-label="Cerrar vista previa" onClick={() => setPreviewNode(null)}><X size={20}/></button>
         <div className="media-title"><span><Eye size={17}/></span><div><h2 id="preview-title">{previewNode.name}</h2><small>{previewNode.relativePath}</small></div></div>
-        {gatewayAccessToken && !nativePlatform && !previewTicket && <p role={previewTicketError ? 'alert' : 'status'}>{previewTicketError || 'Preparando vista previa…'}</p>}
-        {(!gatewayAccessToken || nativePlatform || previewTicket) && (() => {
-          const mediaUrl = nativePlatform || directBrowserMedia
-            ? sourceUrlForPath(previewNode.relativePath)
-            : apiUrl(`/api/file?path=${encodeURIComponent(previewNode.relativePath)}${previewTicket ? `&ticket=${encodeURIComponent(previewTicket)}` : ''}`)
+        {(() => {
+          const mediaUrl = sourceUrlForPath(previewNode.relativePath)
           return <>
             {/\.(jpe?g|png|gif|webp|avif|bmp|svg)$/i.test(previewNode.name)
               ? <img className="media-image" src={mediaUrl} alt={previewNode.name} />
@@ -1034,7 +909,7 @@ function App() {
             <div className="media-actions">
               {directBrowserMedia
                 ? <a className="button button-primary" href={mediaUrl} target="_blank" rel="noreferrer"><ExternalLink size={16}/>Abrir archivo desde UCLV</a>
-                : <a className="button button-primary" href={`${mediaUrl}${mediaUrl.includes('?') ? '&' : '?'}download=1&name=${encodeURIComponent(previewNode.name)}`} download={previewNode.name}><Download size={16}/>Descargar archivo</a>}
+                : <button className="button button-primary" onClick={() => { setPreviewNode(null); openDownloadPlan([previewNode.id]) }}><Download size={16}/>Añadir a descargas</button>}
               {!directBrowserMedia && <a className="text-button media-original" href={mediaUrl} target="_blank" rel="noreferrer">Abrir el archivo original</a>}
             </div>
             {directBrowserMedia && <p className="media-direct-note">La vista previa se reproduce directamente desde UCLV. Chrome administra la apertura o descarga del archivo.</p>}
@@ -1046,15 +921,15 @@ function App() {
       <section className="download-plan-dialog" role="dialog" aria-modal="true" aria-labelledby="download-plan-title">
         <button className="dialog-close icon-button" data-initial-focus aria-label="Cerrar revisión" onClick={() => setPendingDownloadPlan(null)}><X size={19}/></button>
         <span className="dialog-icon"><HardDriveDownload size={22}/></span><p className="eyebrow">Antes de empezar</p><h2 id="download-plan-title">Revisa la descarga</h2>
-        <p>Se preparan {pendingSummary.fileCount} {pendingSummary.fileCount === 1 ? 'archivo' : 'archivos'} para esta cola. Puedes pausarla y volver más tarde.</p>
+        <p>Seleccionaste {pendingSummary.fileCount} {pendingSummary.fileCount === 1 ? 'archivo' : 'archivos'}. Puedes pausarlos y reanudarlos desde Descargas.</p>
         <div className="plan-summary-grid"><div><small>Tamaño conocido</small><strong>{formatBytes(pendingSummary.knownBytes)}</strong></div><div><small>Espacio disponible</small><strong>{mobileBrowserRemote ? 'Chrome lo comprobará' : destinationReady ? formatBytes(downloadSnapshot.freeBytes) : 'Aún no disponible'}</strong></div></div>
         <div className="plan-destination"><HardDriveDownload size={16}/><span><strong>Se guardarán en</strong><small>{mobileBrowserRemote ? 'Descargas de Chrome en este teléfono' : destinationReady ? downloadSnapshot.destination || 'Destino no disponible' : 'Destino aún no disponible'}</small></span></div>
         {pendingSummary.unknownSizeCount > 0 && <p className="plan-warning" role="status">{pendingSummary.unknownSizeCount} archivos no tienen tamaño conocido. {mobileBrowserRemote ? 'Chrome comprobará el espacio disponible al iniciar.' : 'El motor volverá a comprobar el espacio mientras descarga.'}</p>}
-        {pendingDuplicates > 0 && <p className="plan-note">Se omitirán {pendingDuplicates} elementos que ya están en esta cola/destino.</p>}
+        {pendingDuplicates > 0 && <p className="plan-note">{pendingDuplicates} {pendingDuplicates === 1 ? 'archivo ya está' : 'archivos ya están'} en la cola. No se duplicará; puedes revisar o reanudar desde Descargas.</p>}
         {missingPendingCount > 0 && <p className="plan-warning">{missingPendingCount} elementos ya no aparecen en el índice guardado y no se añadirán.</p>}
-        {destinationReady && !pendingFits && <p className="plan-error" role="alert">{nativePlatform ? 'No cabe la selección y su archivo temporal en el espacio disponible. Elige menos archivos o libera espacio.' : 'El tamaño conocido supera el espacio libre. Elige otra carpeta o selecciona menos archivos.'}</p>}
-        {pendingNodes.length > 0 && <p className="gateway-requirement">{mobileBrowserRemote ? 'Los archivos se enviarán al gestor de descargas de Chrome; puedes revisar su avance allí.' : gatewayOnline ? 'El servicio local guarda el avance y permite reanudar la cola.' : nativePlatform ? nativeDestination?.supported ? 'Android descargará con una notificación. Se reserva espacio para los temporales y los archivos finales.' : 'Android no informa un destino compatible con MediaStore. La selección se conserva en tus listas.' : 'Conecta el servicio local para consultar el destino y añadir elementos a la cola.'}</p>}
-        <div className="dialog-actions"><button type="button" className="button button-secondary" onClick={() => setPendingDownloadPlan(null)}>Volver</button><button type="button" className="button button-primary" disabled={!newPendingNodes.length || !pendingFits || (!gatewayOnline && !(nativePlatform && nativeDestination?.supported))} onClick={() => void confirmDownloadPlan()}><Download size={16}/>{mobileBrowserRemote ? 'Enviar a Descargas' : 'Añadir a la cola'}</button></div>
+        {destinationReady && pendingSummary.knownBytes > downloadSnapshot.freeBytes && <p className="plan-warning" role="status">El tamaño del índice es orientativo. La descarga intentará continuar y se detendrá solo si el sistema no puede guardar más datos; el avance quedará disponible para reanudar.</p>}
+        {pendingNodes.length > 0 && <p className="gateway-requirement">{nativePlatform ? nativeDestination?.supported ? 'Android descargará directamente desde UCLV y guardará la cola en este teléfono para reanudarla.' : 'Android no informa un destino compatible con MediaStore. La selección se conserva en tus listas.' : gatewayOnline ? 'La aplicación descargará directamente desde UCLV y conservará la cola en este equipo.' : 'Los archivos se abrirán directamente desde UCLV. El navegador administra las descargas y su avance.'}</p>}
+        <div className="dialog-actions"><button type="button" className="button button-secondary" onClick={() => setPendingDownloadPlan(null)}>Volver</button><button type="button" className="button button-primary" disabled={(!newPendingNodes.length && pendingDuplicates === 0) || (nativePlatform && !nativeDestination?.supported)} onClick={() => void confirmDownloadPlan()}><Download size={16}/>{!newPendingNodes.length && pendingDuplicates > 0 && (nativePlatform || gatewayOnline) ? 'Ver descargas' : nativePlatform || gatewayOnline ? 'Añadir a la cola' : 'Enviar al navegador'}</button></div>
       </section>
     </div>}
   </div>

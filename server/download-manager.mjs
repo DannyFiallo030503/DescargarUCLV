@@ -1,5 +1,5 @@
 import { createWriteStream } from 'node:fs'
-import { lstat, mkdir, open, readFile, rename, rm, stat, statfs, link, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, open, readFile, rename, rm, stat, link, writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 import { Readable, Transform } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
@@ -96,7 +96,7 @@ export class DownloadManager {
           const target = resolve(root, ...relativeSource)
           try {
             const finalInfo = await lstat(target)
-            if (finalInfo.isFile() && !finalInfo.isSymbolicLink() && (item.sizeBytes === undefined || finalInfo.size === item.sizeBytes)) {
+            if (finalInfo.isFile() && !finalInfo.isSymbolicLink() && (item.sizeExact !== true || item.sizeBytes === undefined || finalInfo.size === item.sizeBytes)) {
               item.status = 'completed'
               item.bytesDone = finalInfo.size
               continue
@@ -142,7 +142,7 @@ export class DownloadManager {
       if (name !== parts.at(-1)) parts[parts.length - 1] = name
       const sizeBytes = item.sizeBytes == null ? undefined : Number(item.sizeBytes)
       if (sizeBytes !== undefined && (!Number.isSafeInteger(sizeBytes) || sizeBytes < 0)) throw new Error('Un tamaño de archivo no es válido.')
-      return { id: String(item.id || item.path), name, path: `/${parts.join('/')}`, sizeBytes, status: 'queued', bytesDone: 0, attempts: 0 }
+      return { id: String(item.id || item.path), name, path: `/${parts.join('/')}`, sizeBytes, sizeExact: item.sizeExact === true, status: 'queued', bytesDone: 0, attempts: 0 }
     })
     const uniqueByPath = new Map(normalized.map((item) => [item.path, item]))
     const uniqueItems = [...uniqueByPath.values()]
@@ -152,14 +152,6 @@ export class DownloadManager {
     const duplicateCount = normalized.length - freshItems.length
     if (!freshItems.length) throw new Error('Todos esos archivos ya están en la cola. No se añadieron duplicados.')
     const job = { id: randomUUID(), destination: this.destination, duplicateCount, createdAt: Date.now(), updatedAt: Date.now(), status: 'queued', items: freshItems }
-    const usage = await statfs(job.destination)
-    const freeBytes = Number(usage.bavail) * Number(usage.bsize)
-    const reservedBytes = this.jobs.filter((candidate) => candidate.destination === job.destination && !['completed', 'cancelled'].includes(candidate.status))
-      .flatMap((candidate) => candidate.items)
-      .filter((item) => item.status !== 'completed')
-      .reduce((sum, item) => sum + Math.max(0, (item.sizeBytes ?? 0) - (item.bytesDone ?? 0)), 0)
-    const plannedBytes = freshItems.reduce((sum, item) => sum + (item.sizeBytes ?? 0), 0)
-    if (plannedBytes + reservedBytes > freeBytes) throw new Error(`Espacio insuficiente en ${this.destination}: se requieren ${plannedBytes + reservedBytes} bytes y hay ${freeBytes} bytes disponibles.`)
     this.jobs.unshift(job)
     await this.persist()
     this.schedule()
@@ -299,7 +291,7 @@ export class DownloadManager {
         if (partInfo.isSymbolicLink() || !partInfo.isFile()) throw new TransferError('El archivo temporal de destino no es seguro.', true)
         existing = partInfo.size
       } catch (error) { if (error?.code !== 'ENOENT') throw error }
-      if (item.sizeBytes !== undefined && existing === item.sizeBytes) {
+      if (item.sizeExact === true && item.sizeBytes !== undefined && existing === item.sizeBytes) {
         const durableFile = await open(partial, 'r+')
         try { await durableFile.sync() } finally { await durableFile.close() }
         await this.promotePartial(partial, target)
@@ -308,11 +300,6 @@ export class DownloadManager {
       }
       const validator = item.etag || item.lastModified
       if (existing > 0 && !validator) { await rm(partial, { force: true }); existing = 0 }
-      if (item.sizeBytes !== undefined) {
-        const usage = await statfs(destination)
-        const freeBytes = Number(usage.bavail) * Number(usage.bsize)
-        if (item.sizeBytes - existing > freeBytes) throw new TransferError(`Espacio insuficiente: quedan ${freeBytes} bytes y faltan ${Math.max(0, item.sizeBytes - existing)} bytes de este archivo.`, true)
-      }
       item.attempts = attempt + 1
       const headers = { 'user-agent': 'DescargarUCLV/0.1 (personal)' }
       if (existing > 0) {
@@ -350,13 +337,10 @@ export class DownloadManager {
         }
         item.etag = response.headers.get('etag') || (append ? item.etag : undefined)
         item.lastModified = response.headers.get('last-modified') || (append ? item.lastModified : undefined)
-        const expected = contentRange?.total ?? (contentLength !== undefined ? contentLength + existing : item.sizeBytes)
+        const expected = contentRange?.total ?? (contentLength !== undefined ? contentLength + existing : item.sizeExact === true ? item.sizeBytes : undefined)
         if (expected !== undefined && Number.isSafeInteger(expected) && expected >= 0) {
           item.sizeBytes = expected
-          const usage = await statfs(destination)
-          const freeBytes = Number(usage.bavail) * Number(usage.bsize)
-          const remainingBytes = Math.max(0, expected - existing)
-          if (remainingBytes > freeBytes) throw new TransferError(`Espacio insuficiente: quedan ${freeBytes} bytes y faltan ${remainingBytes} bytes de este archivo.`, true)
+          item.sizeExact = true
         }
         if (!response.body) throw new TransferError('El origen devolvió un archivo vacío.', true)
         await commit()

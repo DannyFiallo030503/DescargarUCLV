@@ -18,7 +18,7 @@ import java.util.Locale;
 /** Durable metadata for Android transfers. File content stays outside SQLite. */
 final class AndroidDownloadStore extends SQLiteOpenHelper {
     private static final String DB_NAME = "download-queue.db";
-    private static final int DB_VERSION = 1;
+    private static final int DB_VERSION = 4;
 
     static final String QUEUED = "queued";
     static final String DOWNLOADING = "downloading";
@@ -32,6 +32,8 @@ final class AndroidDownloadStore extends SQLiteOpenHelper {
         String name;
         String path;
         long sizeBytes;
+        boolean sizeExact;
+        boolean legacyTemporary;
         long bytesDone;
         String status;
         String error;
@@ -40,6 +42,8 @@ final class AndroidDownloadStore extends SQLiteOpenHelper {
         String pendingUri;
         String finalUri;
         long updatedAt;
+        int retryAttempts;
+        long nextAttemptAt;
     }
 
     AndroidDownloadStore(Context context) {
@@ -48,13 +52,19 @@ final class AndroidDownloadStore extends SQLiteOpenHelper {
 
     @Override public void onCreate(SQLiteDatabase db) {
         db.execSQL("CREATE TABLE items (id TEXT PRIMARY KEY, name TEXT NOT NULL, path TEXT NOT NULL UNIQUE, " +
-            "size_bytes INTEGER NOT NULL DEFAULT -1, bytes_done INTEGER NOT NULL DEFAULT 0, " +
-            "status TEXT NOT NULL, error TEXT, etag TEXT, last_modified TEXT, pending_uri TEXT, final_uri TEXT, updated_at INTEGER NOT NULL)");
+            "size_bytes INTEGER NOT NULL DEFAULT -1, size_exact INTEGER NOT NULL DEFAULT 0, legacy_temporary INTEGER NOT NULL DEFAULT 0, bytes_done INTEGER NOT NULL DEFAULT 0, " +
+            "status TEXT NOT NULL, error TEXT, etag TEXT, last_modified TEXT, pending_uri TEXT, final_uri TEXT, updated_at INTEGER NOT NULL, " +
+            "retry_attempts INTEGER NOT NULL DEFAULT 0, next_attempt_at INTEGER NOT NULL DEFAULT 0)");
         db.execSQL("CREATE INDEX items_status_order ON items(status, updated_at)");
     }
 
     @Override public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
-        throw new IllegalStateException("No hay migración de cola para esta versión.");
+        if (oldVersion < 2) {
+            db.execSQL("ALTER TABLE items ADD COLUMN retry_attempts INTEGER NOT NULL DEFAULT 0");
+            db.execSQL("ALTER TABLE items ADD COLUMN next_attempt_at INTEGER NOT NULL DEFAULT 0");
+        }
+        if (oldVersion < 3) db.execSQL("ALTER TABLE items ADD COLUMN size_exact INTEGER NOT NULL DEFAULT 0");
+        if (oldVersion < 4) db.execSQL("ALTER TABLE items ADD COLUMN legacy_temporary INTEGER NOT NULL DEFAULT 1");
     }
 
     synchronized int enqueue(JSArray sourceItems) throws Exception {
@@ -74,6 +84,8 @@ final class AndroidDownloadStore extends SQLiteOpenHelper {
                 values.put("name", name);
                 values.put("path", path);
                 values.put("size_bytes", source.optLong("sizeBytes", -1));
+                values.put("size_exact", source.optBoolean("sizeExact", false) ? 1 : 0);
+                values.put("legacy_temporary", 0);
                 values.put("bytes_done", 0);
                 values.put("status", QUEUED);
                 values.put("updated_at", System.currentTimeMillis());
@@ -91,14 +103,16 @@ final class AndroidDownloadStore extends SQLiteOpenHelper {
 
     synchronized List<Item> items() {
         List<Item> result = new ArrayList<>();
-        try (Cursor cursor = getReadableDatabase().rawQuery("SELECT id,name,path,size_bytes,bytes_done,status,error,etag,last_modified,pending_uri,final_uri,updated_at FROM items ORDER BY updated_at,id", null)) {
+        try (Cursor cursor = getReadableDatabase().rawQuery("SELECT id,name,path,size_bytes,size_exact,legacy_temporary,bytes_done,status,error,etag,last_modified,pending_uri,final_uri,updated_at,retry_attempts,next_attempt_at FROM items ORDER BY updated_at,id", null)) {
             while (cursor.moveToNext()) {
                 Item item = new Item();
                 item.id = cursor.getString(0); item.name = cursor.getString(1); item.path = cursor.getString(2);
-                item.sizeBytes = cursor.getLong(3); item.bytesDone = cursor.getLong(4); item.status = cursor.getString(5);
-                item.error = cursor.isNull(6) ? null : cursor.getString(6); item.etag = cursor.isNull(7) ? null : cursor.getString(7);
-                item.lastModified = cursor.isNull(8) ? null : cursor.getString(8); item.pendingUri = cursor.isNull(9) ? null : cursor.getString(9);
-                item.finalUri = cursor.isNull(10) ? null : cursor.getString(10); item.updatedAt = cursor.getLong(11);
+                item.sizeBytes = cursor.getLong(3); item.sizeExact = cursor.getInt(4) == 1; item.legacyTemporary = cursor.getInt(5) == 1;
+                item.bytesDone = cursor.getLong(6); item.status = cursor.getString(7);
+                item.error = cursor.isNull(8) ? null : cursor.getString(8); item.etag = cursor.isNull(9) ? null : cursor.getString(9);
+                item.lastModified = cursor.isNull(10) ? null : cursor.getString(10); item.pendingUri = cursor.isNull(11) ? null : cursor.getString(11);
+                item.finalUri = cursor.isNull(12) ? null : cursor.getString(12); item.updatedAt = cursor.getLong(13);
+                item.retryAttempts = cursor.getInt(14); item.nextAttemptAt = cursor.getLong(15);
                 result.add(item);
             }
         }
@@ -106,14 +120,16 @@ final class AndroidDownloadStore extends SQLiteOpenHelper {
     }
 
     synchronized Item nextRunnable() {
-        try (Cursor cursor = getReadableDatabase().rawQuery("SELECT id,name,path,size_bytes,bytes_done,status,error,etag,last_modified,pending_uri,final_uri,updated_at FROM items WHERE status IN (?,?,?) ORDER BY updated_at,id LIMIT 1", new String[]{QUEUED, DOWNLOADING, PUBLISHING})) {
+        try (Cursor cursor = getReadableDatabase().rawQuery("SELECT id,name,path,size_bytes,size_exact,legacy_temporary,bytes_done,status,error,etag,last_modified,pending_uri,final_uri,updated_at,retry_attempts,next_attempt_at FROM items WHERE status IN (?,?,?) ORDER BY CASE WHEN next_attempt_at<=? THEN 0 ELSE 1 END,updated_at,id LIMIT 1", new String[]{QUEUED, DOWNLOADING, PUBLISHING, String.valueOf(System.currentTimeMillis())})) {
             if (!cursor.moveToFirst()) return null;
             Item item = new Item();
             item.id = cursor.getString(0); item.name = cursor.getString(1); item.path = cursor.getString(2);
-            item.sizeBytes = cursor.getLong(3); item.bytesDone = cursor.getLong(4); item.status = cursor.getString(5);
-            item.error = cursor.isNull(6) ? null : cursor.getString(6); item.etag = cursor.isNull(7) ? null : cursor.getString(7);
-            item.lastModified = cursor.isNull(8) ? null : cursor.getString(8); item.pendingUri = cursor.isNull(9) ? null : cursor.getString(9);
-            item.finalUri = cursor.isNull(10) ? null : cursor.getString(10); item.updatedAt = cursor.getLong(11);
+            item.sizeBytes = cursor.getLong(3); item.sizeExact = cursor.getInt(4) == 1; item.legacyTemporary = cursor.getInt(5) == 1;
+            item.bytesDone = cursor.getLong(6); item.status = cursor.getString(7);
+            item.error = cursor.isNull(8) ? null : cursor.getString(8); item.etag = cursor.isNull(9) ? null : cursor.getString(9);
+            item.lastModified = cursor.isNull(10) ? null : cursor.getString(10); item.pendingUri = cursor.isNull(11) ? null : cursor.getString(11);
+            item.finalUri = cursor.isNull(12) ? null : cursor.getString(12); item.updatedAt = cursor.getLong(13);
+            item.retryAttempts = cursor.getInt(14); item.nextAttemptAt = cursor.getLong(15);
             return item;
         }
     }
@@ -138,12 +154,18 @@ final class AndroidDownloadStore extends SQLiteOpenHelper {
 
     synchronized long reservedBytes() {
         try (Cursor cursor = getReadableDatabase().rawQuery(
-            "SELECT COALESCE(SUM(size_bytes + MAX(size_bytes - bytes_done, 0)),0) FROM items WHERE size_bytes>0 AND status!=?",
+            "SELECT COALESCE(SUM(MAX(size_bytes - bytes_done, 0) + CASE WHEN legacy_temporary=1 THEN size_bytes ELSE 0 END),0) FROM items WHERE size_bytes>0 AND status!=?",
             new String[]{COMPLETED})) { return cursor.moveToFirst() ? cursor.getLong(0) : 0; }
     }
 
     synchronized void updateState(String id, String status, String error) {
         ContentValues values = new ContentValues(); values.put("status", status); values.put("error", error); values.put("updated_at", System.currentTimeMillis());
+        getWritableDatabase().update("items", values, "id=?", new String[]{id});
+    }
+
+    synchronized void scheduleRetry(String id, int retryAttempts, long nextAttemptAt, String error) {
+        ContentValues values = new ContentValues(); values.put("status", QUEUED); values.put("retry_attempts", retryAttempts);
+        values.put("next_attempt_at", nextAttemptAt); values.put("error", error); values.put("updated_at", System.currentTimeMillis());
         getWritableDatabase().update("items", values, "id=?", new String[]{id});
     }
 
@@ -158,20 +180,41 @@ final class AndroidDownloadStore extends SQLiteOpenHelper {
         getWritableDatabase().update("items", values, "id=?", new String[]{id});
     }
 
-    synchronized void updateExpectedSize(String id, long bytes) {
+    synchronized void updateBytesForPendingUri(String uri, long bytes) {
+        ContentValues values = new ContentValues(); values.put("bytes_done", bytes); values.put("updated_at", System.currentTimeMillis());
+        getWritableDatabase().update("items", values, "pending_uri=?", new String[]{uri});
+    }
+
+    synchronized void updateExpectedSize(String id, long bytes, boolean exact) {
         if (bytes < 0) return;
-        ContentValues values = new ContentValues(); values.put("size_bytes", bytes); values.put("updated_at", System.currentTimeMillis());
-        getWritableDatabase().update("items", values, "id=? AND size_bytes<0", new String[]{id});
+        ContentValues values = new ContentValues(); values.put("size_bytes", bytes); values.put("size_exact", exact ? 1 : 0); values.put("updated_at", System.currentTimeMillis());
+        getWritableDatabase().update("items", values, "id=?", new String[]{id});
+    }
+
+    synchronized void updateExpectedSize(String id, long bytes) { updateExpectedSize(id, bytes, true); }
+
+    synchronized void resetTransfer(String id) {
+        ContentValues values = new ContentValues(); values.put("bytes_done", 0); values.put("status", QUEUED);
+        values.putNull("etag"); values.putNull("last_modified"); values.putNull("error"); values.put("updated_at", System.currentTimeMillis());
+        getWritableDatabase().update("items", values, "id=?", new String[]{id});
     }
 
     synchronized void setPendingUri(String id, String uri) {
-        ContentValues values = new ContentValues(); values.put("pending_uri", uri); values.put("status", PUBLISHING); values.put("updated_at", System.currentTimeMillis());
+        ContentValues values = new ContentValues(); values.put("pending_uri", uri); values.put("updated_at", System.currentTimeMillis());
+        getWritableDatabase().update("items", values, "id=?", new String[]{id});
+    }
+
+    synchronized void clearPendingUri(String id) {
+        ContentValues values = new ContentValues(); values.putNull("pending_uri"); values.put("bytes_done", 0); values.put("updated_at", System.currentTimeMillis());
         getWritableDatabase().update("items", values, "id=?", new String[]{id});
     }
 
     synchronized void complete(String id, String uri, long bytes) {
         ContentValues values = new ContentValues(); values.put("final_uri", uri); values.putNull("pending_uri");
         values.put("bytes_done", bytes); values.put("status", COMPLETED); values.putNull("error"); values.put("updated_at", System.currentTimeMillis());
+        values.put("size_bytes", bytes); values.put("size_exact", 1); values.put("legacy_temporary", 0);
+        values.put("retry_attempts", 0); values.put("next_attempt_at", 0);
+        values.put("legacy_temporary", 0);
         getWritableDatabase().update("items", values, "id=?", new String[]{id});
     }
 
@@ -182,6 +225,7 @@ final class AndroidDownloadStore extends SQLiteOpenHelper {
 
     synchronized void resumeAll() {
         ContentValues values = new ContentValues(); values.put("status", QUEUED); values.putNull("error"); values.put("updated_at", System.currentTimeMillis());
+        values.put("retry_attempts", 0); values.put("next_attempt_at", 0);
         getWritableDatabase().update("items", values, "status IN (?,?,?,?)", new String[]{PAUSED, ERROR, DOWNLOADING, PUBLISHING});
     }
 
@@ -198,7 +242,9 @@ final class AndroidDownloadStore extends SQLiteOpenHelper {
             JSObject value = new JSObject();
             value.put("id", item.id); value.put("name", item.name); value.put("path", item.path);
             if (item.sizeBytes >= 0) value.put("sizeBytes", item.sizeBytes);
+            value.put("sizeExact", item.sizeExact);
             value.put("bytesDone", item.bytesDone); value.put("status", item.status);
+            value.put("retryAttempts", item.retryAttempts); if (item.nextAttemptAt > 0) value.put("nextAttemptAt", item.nextAttemptAt);
             if (item.error != null) value.put("error", item.error);
             jsonItems.put(value);
             downloading |= DOWNLOADING.equals(item.status) || PUBLISHING.equals(item.status);

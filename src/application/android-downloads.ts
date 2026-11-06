@@ -25,7 +25,7 @@ export interface AndroidDownloadSnapshot {
     destinationFreeBytes?: number
     status: string
     updatedAt: number
-    items: Array<AndroidDownloadItem & { bytesDone: number; status: string; error?: string }>
+    items: Array<AndroidDownloadItem & { bytesDone: number; status: string; error?: string; retryAttempts?: number; nextAttemptAt?: number }>
   }>
   added?: number
 }

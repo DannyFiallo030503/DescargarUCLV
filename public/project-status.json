@@ -1,0 +1,34 @@
+{
+  "updatedAt": "2026-11-06",
+  "label": "En desarrollo",
+  "milestones": [
+    {
+      "id": "catalog",
+      "title": "Catálogo local y navegación",
+      "status": "working",
+      "summary": "El índice se guarda en el dispositivo y permite navegar y reproducir medios cuando hay conexión con el origen.",
+      "note": "La web remota no puede leer los listados si visuales.uclv.cu no habilita CORS."
+    },
+    {
+      "id": "downloads",
+      "title": "Colas de descarga en Android y Linux",
+      "status": "implemented-needs-field-validation",
+      "summary": "La versión 0.1.3 incorpora cola local y reintento desde el cliente nativo; el espacio detectado ya no bloquea por estimación.",
+      "note": "Falta probar descarga completa, pausa y reanudación en un dispositivo Android."
+    },
+    {
+      "id": "distribution",
+      "title": "Publicación de instaladores",
+      "status": "in-progress",
+      "summary": "El APK debug y el paquete DEB 0.1.3 están compilados.",
+      "note": "El APK está preparado para el portal. El DEB debe publicarse mediante GitHub Releases."
+    },
+    {
+      "id": "web",
+      "title": "Catálogo desde la web publicada",
+      "status": "blocked-by-origin-policy",
+      "summary": "Vercel puede servir el portal estático, pero el navegador no puede leer el autoíndice UCLV sin autorización CORS.",
+      "note": "La app Android y la app Linux se conectan directamente desde el dispositivo."
+    }
+  ]
+}

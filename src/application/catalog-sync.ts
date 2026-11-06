@@ -1,8 +1,14 @@
 import type { CatalogNode } from '@/domain/catalog'
-import { catalogRepository, type SyncState } from '@/data/database'
+import { catalogRepository, MAX_AUTOMATIC_DIRECTORY_ATTEMPTS, type SyncState } from '@/data/database'
 import type { CatalogAdapter } from './catalog-adapter'
 
 const quickRetryDelayMs = 650
+const deferredRetryDelaysMs = [15_000, 60_000]
+
+function directoryRetryDelay(attempt: number): number {
+  const base = deferredRetryDelaysMs[Math.min(attempt - 1, deferredRetryDelaysMs.length - 1)]
+  return Math.round(base * (0.8 + Math.random() * 0.4))
+}
 
 function delay(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -30,6 +36,7 @@ export class CatalogSyncService {
   constructor(
     private readonly adapter: CatalogAdapter,
     private readonly onDirectoryCommitted: (entries: CatalogNode[]) => void = () => {},
+    private readonly retryDelay: (attempt: number) => number = directoryRetryDelay,
   ) {}
 
   pause(): void {
@@ -37,13 +44,13 @@ export class CatalogSyncService {
     this.controller = undefined
   }
 
-  run(onProgress: (state: SyncState) => void): Promise<SyncState> {
+  run(onProgress: (state: SyncState) => void, options: { retryDeferred?: boolean } = {}): Promise<SyncState> {
     if (this.activeRun && this.controller && !this.controller.signal.aborted) return this.activeRun
-    if (this.activeRun) return this.activeRun.then(() => this.run(onProgress))
+    if (this.activeRun) return this.activeRun.then(() => this.run(onProgress, options))
     const controller = new AbortController()
     this.controller = controller
     let trackedRun: Promise<SyncState>
-    trackedRun = this.execute(onProgress, controller).finally(() => {
+    trackedRun = this.execute(onProgress, controller, options.retryDeferred ?? true).finally(() => {
       if (this.controller === controller) this.controller = undefined
       if (this.activeRun === trackedRun) this.activeRun = undefined
     })
@@ -51,18 +58,18 @@ export class CatalogSyncService {
     return trackedRun
   }
 
-  private async execute(onProgress: (state: SyncState) => void, controller: AbortController): Promise<SyncState> {
+  private async execute(onProgress: (state: SyncState) => void, controller: AbortController, retryDeferred: boolean): Promise<SyncState> {
     const signal = controller.signal
     const previous = await catalogRepository.getSyncState()
     if (previous.phase === 'idle' || previous.phase === 'complete') await catalogRepository.resetSyncQueue()
-    else if (previous.phase === 'partial' || (previous.phase === 'paused' && (previous.deferredDirectories ?? 0) > 0)) {
+    else if (retryDeferred && (previous.phase === 'partial' || (previous.phase === 'paused' && (previous.deferredDirectories ?? 0) > 0))) {
       await catalogRepository.retryDeferredDirectories()
     }
     const resumed = await catalogRepository.getSyncState()
     let directoriesDone = resumed.directoriesDone
     let filesFound = resumed.filesFound
     let deferredDirectories = resumed.deferredDirectories ?? 0
-    let lastDeferredError: string | undefined
+    let lastDeferredError: string | undefined = resumed.lastError
     const state: SyncState = {
       phase: 'running', directoriesDone, filesFound,
     }
@@ -70,8 +77,22 @@ export class CatalogSyncService {
     onProgress(state)
 
     try {
-      let path = await catalogRepository.nextPendingDirectory()
-      while (path && !signal.aborted) {
+      while (!signal.aborted) {
+        const pendingPath = await catalogRepository.nextPendingDirectory()
+        const deferred = pendingPath ? undefined : await catalogRepository.nextDueDeferredDirectory()
+        const path = pendingPath ?? deferred?.path
+        if (!path) {
+          const nextRetryAt = await catalogRepository.nextDeferredRetryAt()
+          if (nextRetryAt !== undefined) {
+            const waiting: SyncState = { phase: 'running', directoriesDone, filesFound,
+              deferredDirectories: await catalogRepository.countDeferredDirectories(), lastError: lastDeferredError, nextRetryAt }
+            await catalogRepository.saveSyncState(waiting)
+            onProgress(waiting)
+            await delay(Math.max(0, nextRetryAt - Date.now()), signal)
+            continue
+          }
+          break
+        }
         let entries: CatalogNode[] = []
         let lastError: unknown
         for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -86,33 +107,40 @@ export class CatalogSyncService {
           }
         }
         if (lastError) {
-          if (!signal.aborted && isDeferrable(lastError)) {
-            deferredDirectories = await catalogRepository.deferDirectory(path)
+          if (!signal.aborted && (isDeferrable(lastError) || isRetryable(lastError))) {
             lastDeferredError = lastError instanceof Error ? lastError.message : 'No se pudo leer una carpeta.'
+            const attempt = (deferred?.attempts ?? 0) + 1
+            const retryAt = attempt < MAX_AUTOMATIC_DIRECTORY_ATTEMPTS ? Date.now() + Math.max(0, this.retryDelay(attempt)) : undefined
+            const retry = await catalogRepository.deferDirectory(path, retryAt, lastDeferredError)
+            deferredDirectories = retry.deferredDirectories
             const checkpoint: SyncState = {
               phase: 'running', directoriesDone, filesFound, deferredDirectories, lastError: lastDeferredError,
+              nextRetryAt: await catalogRepository.nextDeferredRetryAt(),
             }
             await catalogRepository.saveSyncState(checkpoint)
             onProgress(checkpoint)
-            path = await catalogRepository.nextPendingDirectory()
             continue
           }
           throw lastError
         }
         directoriesDone += 1
+        deferredDirectories = await catalogRepository.countDeferredDirectories()
         filesFound += entries.filter((entry) => entry.kind === 'file').length
         const checkpoint: SyncState = {
-          phase: 'running', directoriesDone, filesFound,
+          phase: 'running', directoriesDone, filesFound, deferredDirectories,
+          nextRetryAt: await catalogRepository.nextDeferredRetryAt(),
         }
-        await catalogRepository.commitDirectory(path, entries, checkpoint)
+        const committed = await catalogRepository.commitDirectory(path, entries, checkpoint)
+        deferredDirectories = committed.deferredDirectories ?? 0
         this.onDirectoryCommitted(entries)
-        onProgress(checkpoint)
-        path = await catalogRepository.nextPendingDirectory()
+        onProgress(committed)
       }
+      deferredDirectories = await catalogRepository.countDeferredDirectories()
+      const nextRetryAt = await catalogRepository.nextDeferredRetryAt()
       const finalState: SyncState = signal.aborted
-        ? { phase: 'paused', directoriesDone, filesFound, deferredDirectories, lastError: lastDeferredError }
+        ? { phase: 'paused', directoriesDone, filesFound, deferredDirectories, lastError: lastDeferredError, nextRetryAt }
         : deferredDirectories > 0
-          ? { phase: 'partial', directoriesDone, filesFound, deferredDirectories, lastError: lastDeferredError }
+          ? { phase: 'partial', directoriesDone, filesFound, deferredDirectories, lastError: lastDeferredError, nextRetryAt }
           : { phase: 'complete', directoriesDone, filesFound, lastCompletedAt: Date.now() }
       await catalogRepository.saveSyncState(finalState)
       onProgress(finalState)

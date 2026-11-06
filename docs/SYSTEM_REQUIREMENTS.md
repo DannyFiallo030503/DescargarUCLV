@@ -4,7 +4,7 @@
 
 - Web: cliente estático PWA servido por HTTPS; almacenamiento local y service worker. La comunicación con `visuales.uclv.cu` depende de CORS o del mecanismo que se confirme en descubrimiento.
 - Android: shell Capacitor 8.6 con `compileSdk/targetSdk 36`. El build requiere Android SDK y Android Studio compatible. Descarga persistente requiere un port de API y un worker nativo (WorkManager/servicio foreground según el perfil de transferencia), MediaStore/SAF y validación Range/ETag; el shell actual no integra el gateway Node.
-- Escritorio: instalar el PWA desde Chrome/Edge como opción personal inicial. Tauri 2 empaquetado solo si luego se necesita selector/transfer worker nativos; el entorno de desarrollo actual carece de Rust/WebKitGTK.
+- Escritorio Linux: shell Electron que empaqueta el frontend y el gateway Node local. El gateway escucha en loopback, sirve la interfaz y consulta el origen directamente desde el equipo; no requiere cuenta, backend ni servicio de nube. `npm run desktop:linux` produce un `.deb` para Ubuntu/Debian, cuyo instalador configura el sandbox de Chromium. El paquete incluye Electron/Chromium y es mayor que una PWA; el renderer conserva sandbox, aislamiento de contexto y Node.js desactivado.
 - Sin cuenta, base ni servicio de nube en V1. Backend o proxy de mismo origen solo si CORS/índice hacen inviable la web estática; registrar seguridad, operación y privacidad antes de incorporarlo.
 
 ## 2. Entorno de desarrollo
@@ -14,8 +14,9 @@
 | Todos | Git, Node.js compatible con la versión vigente de Vite/Capacitor, gestor de paquetes versionado, TypeScript, editor con lint/format y Chrome/Chromium actual para inspección y E2E. |
 | Web/PWA | Navegador HTTPS/localhost, DevTools, perfil limpio para instalar/uninstall, capacidades offline y site storage. |
 | Android APK | Capacitor 8 con Android SDK API 36 y JDK 21. Android Studio es opcional si se instala el SDK y se compila con Gradle Wrapper. Faltan pruebas en dispositivo físico de Downloads/MediaStore, reinicio/background, batería y permisos. |
-| Linux escritorio empaquetado (opcional) | PWA instalable ya disponible por Chrome/Edge. Para Tauri: Rust toolchain, WebKitGTK/build libraries y escritorio real para selector; esos prerrequisitos faltan en este entorno. |
-| Windows/macOS (si se eligen) | Toolchain oficial de build de Tauri y runtime WebView del sistema; compilación y permisos en cada OS destino. No prometer binario universal desde otro OS. |
+| Linux escritorio | Node.js 24 para desarrollo, dependencias npm fijadas y escritorio X11/Wayland. El paquete `.deb` instala Electron/Chromium con su sandbox estándar. |
+| Windows (siguiente target) | Usar la misma shell y gateway; añadir target NSIS/portable y verificar empaquetado/rutas en Windows. No prometer binario Windows construido desde Linux sin configurar y validar el toolchain de destino. |
+| macOS | Sin target elegido; evaluar por separado si se solicita. |
 
 Versiones actuales web/Capacitor se fijan en `package.json`/lockfile y ADR de implementación. El project Android sincroniza `compileSdk/targetSdk 36` del paquete Capacitor 8. No actualizar major automáticamente durante una fase de release.
 

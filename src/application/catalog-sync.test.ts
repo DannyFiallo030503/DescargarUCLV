@@ -99,7 +99,7 @@ describe('CatalogSyncService', () => {
     expect(calls).toBe(2)
   })
 
-  it('aparca el timeout y continúa con las demás carpetas sin repetir la espera larga', async () => {
+  it('aplaza los timeouts, continúa la cola y reintenta automáticamente con espera', async () => {
     await catalogRepository.ensureFixture()
     let calls = 0
     const rootFolder: CatalogNode = {
@@ -128,23 +128,34 @@ describe('CatalogSyncService', () => {
         return []
       },
     }
-    const service = new CatalogSyncService(adapter)
+    const service = new CatalogSyncService(adapter, () => {}, () => 0)
 
     const failed = await service.run(() => {})
 
-    expect(calls).toBe(4)
+    expect(calls).toBe(5)
     expect(failed).toMatchObject({
-      phase: 'partial',
-      directoriesDone: 3,
+      phase: 'complete',
+      directoriesDone: 4,
       filesFound: 1,
-      deferredDirectories: 1,
-      lastError: 'El origen no respondió al listado en 15 segundos.',
     })
-    expect(callsByPath.get('/root-folder/slow/')).toBe(1)
-    expect(await catalogRepository.children('/root-folder/fast/')).toContainEqual(file)
-
-    const resumed = await service.run(() => {})
-    expect(resumed).toMatchObject({ phase: 'complete', directoriesDone: 4, filesFound: 1 })
     expect(callsByPath.get('/root-folder/slow/')).toBe(2)
+    expect(await catalogRepository.children('/root-folder/fast/')).toContainEqual(file)
+  })
+
+  it('limita los reintentos automáticos y conserva la carpeta agotada para reintento manual', async () => {
+    await catalogRepository.ensureFixture()
+    let calls = 0
+    const adapter = {
+      listDirectory: async (): Promise<CatalogNode[]> => {
+        calls += 1
+        throw Object.assign(new Error('UCLV no respondió.'), { retryable: false, deferSync: true })
+      },
+    }
+    const result = await new CatalogSyncService(adapter, () => {}, () => 0).run(() => {})
+
+    expect(calls).toBe(3)
+    expect(result).toMatchObject({ phase: 'partial', deferredDirectories: 1, lastError: 'UCLV no respondió.' })
+    expect(result.nextRetryAt).toBeUndefined()
+    expect(await catalogRepository.hasAutomaticSyncWork()).toBe(false)
   })
 })

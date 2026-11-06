@@ -4,7 +4,7 @@ import type { CatalogNode } from '@/domain/catalog'
 import type { CatalogAdapter } from '@/application/catalog-adapter'
 import { isAllowedSourceUrl, sourceUrlForPath } from '@/application/source-url'
 
-const TIMEOUT_MS = 15_000
+const TIMEOUT_MS = 30_000
 const MAX_REDIRECTS = 3
 const MAX_INDEX_BYTES = 16 * 1024 * 1024
 
@@ -56,7 +56,7 @@ export class NativeCatalogAdapter implements CatalogAdapter {
         const message = cause instanceof Error ? cause.message : String(cause)
         const error = new Error(message || 'No se pudo conectar con el catálogo.')
         if (/timeout|timed out|timedout/i.test(message)) {
-          error.message = 'La carpeta tardó demasiado en responder y se dejó para reintento manual.'
+          error.message = 'La carpeta tardó demasiado en responder y se guardó para reintentarla.'
           Object.assign(error, { retryable: false, deferSync: true })
         } else {
           Object.assign(error, { retryable: true })

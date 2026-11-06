@@ -33,6 +33,7 @@ export interface SyncState {
   deferredDirectories?: number
   lastError?: string
   lastCompletedAt?: number
+  nextRetryAt?: number
 }
 
 export interface CatalogBackupV1 {
@@ -47,7 +48,15 @@ export interface CatalogBackupV1 {
   catalogMode: 'example' | 'live'
 }
 
-interface SyncDirectory { path: string; status: 'pending' | 'complete' | 'deferred' }
+export interface SyncDirectory {
+  path: string
+  status: 'pending' | 'complete' | 'deferred'
+  attempts?: number
+  nextRetryAt?: number
+  lastError?: string
+}
+
+export const MAX_AUTOMATIC_DIRECTORY_ATTEMPTS = 3
 
 interface SettingRecord { key: string; value: unknown }
 
@@ -168,14 +177,59 @@ export const catalogRepository = {
     return cursor?.value.path
   },
 
-  async deferDirectory(path: string): Promise<number> {
+  async deferDirectory(path: string, nextRetryAt: number | undefined, lastError: string): Promise<{ deferredDirectories: number; attempts: number }> {
     const db = await database()
     const tx = db.transaction('syncDirectories', 'readwrite')
     const queue = tx.objectStore('syncDirectories')
-    await queue.put({ path, status: 'deferred' })
+    const attempts = ((await queue.get(path))?.attempts ?? 0) + 1
+    await queue.put({ path, status: 'deferred', attempts,
+      ...(attempts < MAX_AUTOMATIC_DIRECTORY_ATTEMPTS && nextRetryAt ? { nextRetryAt } : {}), lastError })
     const deferred = await queue.index('by-status').count('deferred')
     await tx.done
-    return deferred
+    return { deferredDirectories: deferred, attempts }
+  },
+
+  async nextDueDeferredDirectory(now = Date.now()): Promise<SyncDirectory | undefined> {
+    const cursor = await (await database()).transaction('syncDirectories').store.index('by-status').openCursor('deferred')
+    let current = cursor
+    while (current) {
+      const directory = current.value
+      if ((directory.attempts ?? 0) < MAX_AUTOMATIC_DIRECTORY_ATTEMPTS
+        && (directory.nextRetryAt ?? 0) <= now) return directory
+      current = await current.continue()
+    }
+    return undefined
+  },
+
+  async nextDeferredRetryAt(): Promise<number | undefined> {
+    const cursor = await (await database()).transaction('syncDirectories').store.index('by-status').openCursor('deferred')
+    let current = cursor
+    let next: number | undefined
+    while (current) {
+      const directory = current.value
+      if ((directory.attempts ?? 0) < MAX_AUTOMATIC_DIRECTORY_ATTEMPTS && directory.nextRetryAt !== undefined) {
+        next = next === undefined ? directory.nextRetryAt : Math.min(next, directory.nextRetryAt)
+      }
+      current = await current.continue()
+    }
+    return next
+  },
+
+  async hasAutomaticSyncWork(): Promise<boolean> {
+    const db = await database()
+    const queue = db.transaction('syncDirectories').store
+    if (await queue.index('by-status').count('pending')) return true
+    const cursor = await queue.index('by-status').openCursor('deferred')
+    let current = cursor
+    while (current) {
+      if ((current.value.attempts ?? 0) < MAX_AUTOMATIC_DIRECTORY_ATTEMPTS) return true
+      current = await current.continue()
+    }
+    return false
+  },
+
+  async countDeferredDirectories(): Promise<number> {
+    return (await database()).transaction('syncDirectories').store.index('by-status').count('deferred')
   },
 
   async retryDeferredDirectories(): Promise<void> {
@@ -184,17 +238,17 @@ export const catalogRepository = {
     const queue = tx.objectStore('syncDirectories')
     let cursor = await queue.index('by-status').openCursor('deferred')
     while (cursor) {
-      await cursor.update({ ...cursor.value, status: 'pending' })
+      await cursor.update({ ...cursor.value, status: 'pending', attempts: 0, nextRetryAt: undefined, lastError: undefined })
       cursor = await cursor.continue()
     }
     const sync = await tx.objectStore('settings').get('sync-state')
     if (sync?.value) await tx.objectStore('settings').put({
-      key: 'sync-state', value: { ...sync.value, deferredDirectories: 0, lastError: undefined },
+      key: 'sync-state', value: { ...sync.value, deferredDirectories: 0, lastError: undefined, nextRetryAt: undefined },
     })
     await tx.done
   },
 
-  async commitDirectory(path: string, entries: CatalogNode[], state: SyncState): Promise<void> {
+  async commitDirectory(path: string, entries: CatalogNode[], state: SyncState): Promise<SyncState> {
     const db = await database()
     const tx = db.transaction(['catalog', 'settings', 'syncDirectories'], 'readwrite')
     const catalog = tx.objectStore('catalog')
@@ -211,9 +265,11 @@ export const catalogRepository = {
       if (entry.kind !== 'directory' || await queue.get(entry.relativePath)) continue
       await queue.put({ path: entry.relativePath, status: 'pending' })
     }
-    await settings.put({ key: 'sync-state', value: state })
     if (path === '/') await settings.put({ key: 'catalog-mode', value: 'live' })
+    const committedState = { ...state, deferredDirectories: await queue.index('by-status').count('deferred') }
+    await settings.put({ key: 'sync-state', value: committedState })
     await tx.done
+    return committedState
   },
 
   async getSyncState(): Promise<SyncState> {

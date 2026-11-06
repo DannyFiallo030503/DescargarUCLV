@@ -3,6 +3,7 @@ package cu.uclv.descargar;
 import java.util.Locale;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.concurrent.ThreadLocalRandom;
 
 /** Pure HTTP range and validator checks, kept separate so they can run as local JVM tests. */
 final class TransferProtocol {
@@ -23,6 +24,16 @@ final class TransferProtocol {
         if (oldEtag != null) return oldEtag.equals(newEtag);
         if (oldModified != null) return oldModified.equals(newModified);
         return false;
+    }
+
+    static long downloadRetryDelay(int retryNumber) {
+        long[] baseDelays = {15_000L, 60_000L, 180_000L};
+        long base = baseDelays[Math.max(0, Math.min(retryNumber - 1, baseDelays.length - 1))];
+        return Math.round(base * ThreadLocalRandom.current().nextDouble(0.8, 1.2));
+    }
+
+    static boolean retryableStatus(int status) {
+        return status == 408 || status == 425 || status == 429 || status >= 500;
     }
 
     private static Matcher match(String value) {

@@ -20,12 +20,12 @@ React + TypeScript (PWA)
        ├─ DownloadManager: un archivo a la vez, Range/If-Range, checkpoints `.part`
        ├─ Estado JSON atómico en el perfil del usuario; contenido en Downloads del SO
        ├─ Capacitor Android: transporte HTTPS/parseo nativo del catálogo, consulta MediaStore/espacio
-       └─ Desktop instalable como PWA; Tauri se mantiene como opción posterior
+       └─ App Electron Linux: ventana local + gateway Node empaquetado, solo loopback
 
 Origen UCLV (índice Apache/HTTP; formato y CORS por confirmar)
 ```
 
-El gateway es local y escucha solo en loopback; no es un backend remoto. Requiere que el proceso esté activo para transferir. El API de escritura valida `Origin`, JSON y header `X-UCLV-Request`; falta revisar endurecimiento frente a escenarios de loopback/DNS rebinding y threat-model completo antes de release. El APK necesita su propio adaptador nativo y no se acopla a rutas del gateway.
+El gateway de escritorio es local y escucha solo en loopback; no es un backend remoto ni un proxy alojado. El proceso del equipo consulta HTTPS de `visuales.uclv.cu`, y VPN/firewall/ruta local determinan su conectividad. Requiere que la app esté abierta para trabajar; los jobs se recuperan desde el estado persistido al volver a abrirla. El API de escritura valida `Origin`, JSON y header `X-UCLV-Request`; falta revisar endurecimiento frente a escenarios de loopback/DNS rebinding y threat-model completo antes de release. El APK mantiene su adaptador nativo y no se acopla a rutas del gateway.
 
 ## 3. Capas
 

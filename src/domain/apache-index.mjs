@@ -24,6 +24,22 @@ function parseSize(label) {
   return Math.floor(Number(match[1]) * 1024 ** power)
 }
 
+function mimeTypeForName(name) {
+  const extension = name.split('.').at(-1)?.toLowerCase()
+  const types = {
+    '3gp': 'video/3gpp', '7z': 'application/x-7z-compressed', avi: 'video/x-msvideo',
+    bmp: 'image/bmp', csv: 'text/csv', doc: 'application/msword', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    flac: 'audio/flac', gif: 'image/gif', gz: 'application/gzip', jpeg: 'image/jpeg', jpg: 'image/jpeg',
+    m4v: 'video/mp4', m4a: 'audio/mp4', mkv: 'video/x-matroska', mov: 'video/quicktime', mp3: 'audio/mpeg',
+    mp4: 'video/mp4', mpeg: 'video/mpeg', mpg: 'video/mpeg', ogg: 'audio/ogg', ogv: 'video/ogg', pdf: 'application/pdf',
+    png: 'image/png', ppt: 'application/vnd.ms-powerpoint', pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    rar: 'application/vnd.rar', srt: 'application/x-subrip', svg: 'image/svg+xml', txt: 'text/plain', wav: 'audio/wav',
+    webm: 'video/webm', webp: 'image/webp', xls: 'application/vnd.ms-excel', xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    zip: 'application/zip',
+  }
+  return types[extension] || 'application/octet-stream'
+}
+
 function safeDecodedPath(url) {
   const segments = url.pathname.split('/').filter(Boolean).map((segment) => {
     const decoded = decodePathSegment(segment)
@@ -50,7 +66,11 @@ export function parseApacheIndex(html, directoryUrl) {
     if (cells.length < 2) continue
     const anchor = findElements(cells[1], 'a')[0]
     if (!anchor) continue
-    candidates.push({ anchor, sizeLabel: cells[3] ? textContent(cells[3]).trim() : '' })
+    candidates.push({
+      anchor,
+      modifiedAt: cells[2] ? textContent(cells[2]).trim() : '',
+      sizeLabel: cells[3] ? textContent(cells[3]).trim() : '',
+    })
   }
   // Apache 2.4 can render indexes as a <pre> list instead of a table. In that
   // format the file size is the final token after each link (directories use -).
@@ -65,14 +85,20 @@ export function parseApacheIndex(html, directoryUrl) {
           trailingText += textContent(siblings[cursor])
         }
       }
-      const lastToken = trailingText.trim().split(/\s+/).at(-1) || ''
-      candidates.push({ anchor, sizeLabel: lastToken === '-' ? '' : lastToken })
+      const trailing = trailingText.trim()
+      const dateAndSize = trailing.match(/^(\d{2}-[A-Za-z]{3}-\d{4}\s+\d{2}:\d{2})\s+(.+)$/)
+      const lastToken = trailing.split(/\s+/).at(-1) || ''
+      candidates.push({
+        anchor,
+        modifiedAt: dateAndSize?.[1] || '',
+        sizeLabel: lastToken === '-' ? '' : lastToken,
+      })
     }
   }
   const entries = []
   const seen = new Set()
 
-  for (const { anchor, sizeLabel } of candidates) {
+  for (const { anchor, sizeLabel, modifiedAt } of candidates) {
     const href = anchor?.attrs?.find((attribute) => attribute.name === 'href')?.value
     if (!href || href.startsWith('?') || href === '../' || href === './') continue
     let remote
@@ -94,7 +120,10 @@ export function parseApacheIndex(html, directoryUrl) {
       kind: isDirectory ? 'directory' : 'file',
       sizeBytes: isDirectory ? undefined : parseSize(sizeLabel),
       sizeLabel: isDirectory ? undefined : sizeLabel || undefined,
+      sizeExact: isDirectory || !sizeLabel ? undefined : /^\d[\d,]*$/.test(sizeLabel),
+      mimeType: isDirectory ? undefined : mimeTypeForName(name),
       sourceUrl: remote.href,
+      modifiedAt: modifiedAt || undefined,
     })
   }
   return entries

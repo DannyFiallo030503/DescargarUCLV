@@ -9,6 +9,8 @@ export interface CatalogNode {
   kind: NodeKind
   sizeBytes?: number
   sizeLabel?: string
+  sizeExact?: boolean
+  mimeType?: string
   sourceUrl?: string
   modifiedAt?: string
 }

@@ -1,5 +1,5 @@
 import type { CatalogNode } from '@/domain/catalog'
-import type { CatalogBackupV1, FavoriteRecord, SavedList, SyncState } from './database'
+import { MAX_AUTOMATIC_DIRECTORY_ATTEMPTS, type CatalogBackupV1, type FavoriteRecord, type SavedList, type SyncState } from './database'
 
 const MAX_RECORDS = 500_000
 const safePath = (value: unknown): value is string => typeof value === 'string'
@@ -31,6 +31,7 @@ function validSyncState(value: unknown): value is SyncState {
     && (value.deferredDirectories === undefined || (Number.isSafeInteger(value.deferredDirectories) && Number(value.deferredDirectories) >= 0))
     && (value.lastError === undefined || typeof value.lastError === 'string')
     && (value.lastCompletedAt === undefined || (Number.isFinite(value.lastCompletedAt) && Number(value.lastCompletedAt) >= 0))
+    && (value.nextRetryAt === undefined || (Number.isSafeInteger(value.nextRetryAt) && Number(value.nextRetryAt) > 0))
 }
 
 export interface BackupPreview {
@@ -75,7 +76,10 @@ export function parseBackup(text: string): BackupPreview {
     throw new Error('La copia contiene IDs de lista repetidos.')
   }
   if (!value.syncDirectories.every((item) => record(item) && safePath(item.path)
-    && (item.status === 'pending' || item.status === 'complete' || item.status === 'deferred'))) throw new Error('El checkpoint de catálogo no es válido.')
+    && (item.status === 'pending' || item.status === 'complete' || item.status === 'deferred')
+    && (item.attempts === undefined || (Number.isSafeInteger(item.attempts) && Number(item.attempts) >= 0 && Number(item.attempts) <= MAX_AUTOMATIC_DIRECTORY_ATTEMPTS))
+    && (item.nextRetryAt === undefined || (Number.isSafeInteger(item.nextRetryAt) && Number(item.nextRetryAt) > 0))
+    && (item.lastError === undefined || (typeof item.lastError === 'string' && item.lastError.length <= 2048)))) throw new Error('El checkpoint de catálogo no es válido.')
   if (new Set((value.syncDirectories as Array<{ path: string }>).map(({ path }) => path)).size !== value.syncDirectories.length) {
     throw new Error('El checkpoint contiene carpetas repetidas.')
   }

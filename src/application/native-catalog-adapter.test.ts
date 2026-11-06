@@ -20,7 +20,7 @@ describe('NativeCatalogAdapter', () => {
     ])
     expect(request).toHaveBeenCalledWith(expect.objectContaining({
       url: 'https://visuales.uclv.cu/Anime/Serie/', method: 'GET', disableRedirects: true,
-      connectTimeout: 15000, readTimeout: 15000,
+      connectTimeout: 30000, readTimeout: 30000,
     }))
   })
 
@@ -48,7 +48,7 @@ describe('NativeCatalogAdapter', () => {
     const request = vi.fn<NativeHttpRequest>().mockRejectedValue(new Error('Read timed out'))
     const error = await new NativeCatalogAdapter(request).listDirectory('/').catch((value: unknown) => value as Error & Record<string, unknown>)
     expect(error).toMatchObject({ deferSync: true, retryable: false })
-    expect((error as Error).message).toContain('reintento manual')
+    expect((error as Error).message).toContain('guardó para reintentarla')
   })
 
   it('checks connectivity with a HEAD request and supports cancellation', async () => {

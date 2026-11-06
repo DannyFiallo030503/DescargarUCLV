@@ -1,0 +1,28 @@
+{
+  "latestVersion": "0.1.3",
+  "updatedAt": "2026-11-06",
+  "downloads": [
+    {
+      "platform": "android",
+      "version": "0.1.3",
+      "name": "Descargar UCLV para Android",
+      "fileName": "Descargar-UCLV-0.1.3-debug.apk",
+      "url": "/downloads/Descargar-UCLV-0.1.3-debug.apk",
+      "format": "APK debug",
+      "status": "build-ready",
+      "sha256": "8561a0e4dcd4338189e85bac8755b14c124089fcb981ea8d84c4ef3803095e2a",
+      "notes": "Compilación de desarrollo. La descarga real y su reanudación aún necesitan validación en un teléfono o emulador."
+    },
+    {
+      "platform": "linux",
+      "version": "0.1.3",
+      "name": "Descargar UCLV para Linux",
+      "fileName": "uclv-media_0.1.3_amd64.deb",
+      "format": "DEB amd64",
+      "status": "built-unpublished",
+      "url": null,
+      "releasePage": "https://github.com/DannyFiallo030503/DescargarUCLV/releases",
+      "notes": "El paquete está generado. Debe publicarse en GitHub Releases; supera el límite de archivo de un despliegue Vercel Hobby."
+    }
+  ]
+}

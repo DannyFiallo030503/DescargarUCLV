@@ -23,9 +23,7 @@ import com.getcapacitor.annotation.Permission;
 import com.getcapacitor.annotation.PermissionCallback;
 
 import java.io.File;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Set;
 import org.json.JSONObject;
 
 @CapacitorPlugin(name = "AndroidDownloads", permissions = {
@@ -34,7 +32,6 @@ import org.json.JSONObject;
 public class AndroidDownloadsPlugin extends Plugin {
     private static final String TAG = "AndroidDownloads";
     private static final int TRANSFER_JOB_ID = 24731;
-    private static final long MIN_FREE_RESERVE = 64L * 1024 * 1024;
 
     @PluginMethod
     public void getDestinationInfo(PluginCall call) {
@@ -84,23 +81,10 @@ public class AndroidDownloadsPlugin extends Plugin {
             JSArray items = call.getArray("items");
             if (items == null || items.length() == 0) { call.reject("La selección no contiene archivos."); return; }
             AndroidDownloadStore queue = store();
-            long free = freeBytes();
-            long alreadyReserved = queue.reservedBytes();
-            long knownBytes = 0;
-            Set<String> existingPaths = new HashSet<>();
-            for (AndroidDownloadStore.Item saved : queue.items()) existingPaths.add(saved.path);
             for (int index = 0; index < items.length(); index++) {
                 JSONObject item = items.getJSONObject(index);
                 String path = item.optString("path", "");
                 AndroidDownloadStore.validatePath(path);
-                if (existingPaths.contains(path)) continue;
-                long size = item.optLong("sizeBytes", -1);
-                if (size > 0) knownBytes = knownBytes > Long.MAX_VALUE - size ? Long.MAX_VALUE : knownBytes + size;
-                existingPaths.add(path);
-            }
-            long transferBytes = knownBytes > Long.MAX_VALUE / 2 ? Long.MAX_VALUE : knownBytes * 2;
-            if (knownBytes > 0 && (free <= MIN_FREE_RESERVE || alreadyReserved > free - MIN_FREE_RESERVE || transferBytes > free - MIN_FREE_RESERVE - alreadyReserved)) {
-                call.reject("No hay espacio suficiente para el temporal y el archivo final. Deja al menos 64 MiB libres o elige menos contenido."); return;
             }
             int added = queue.enqueue(items);
             if ((added > 0 || queue.hasRunnable()) && !startTransfer(queue.totalQueuedBytes())) {
